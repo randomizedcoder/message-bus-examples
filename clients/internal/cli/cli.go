@@ -6,8 +6,10 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -38,18 +40,35 @@ type Flags struct {
 	interval time.Duration // per-message pub delay, derived from -rate
 }
 
-// Parse reads os.Args as `<bin> <pub|sub> [flags]` and returns the
-// resolved Flags. `defAddr` is the default NodePort address for this bus;
-// `defPass` seeds -pass (typically from an env var).
+// Parse reads os.Args as `<bin> <pub|sub> [flags]` and returns the resolved
+// Flags, exiting the process (via Usage) on any error. `defAddr` is the
+// default NodePort address for this bus; `defPass` seeds -pass (typically from
+// an env var). The parsing itself lives in parseArgs (pure, error-returning)
+// so it can be unit-tested without touching os.Args or os.Exit.
 func Parse(bin, defAddr, defPass string) *Flags {
-	if len(os.Args) < 2 {
-		Usage(bin)
+	f, err := parseArgs(bin, defAddr, defPass, os.Args[1:])
+	if err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", bin, err)
+		}
+		Usage(bin) // prints the usage line and exits 2
 	}
-	cmd := os.Args[1]
+	return f
+}
+
+// parseArgs is the pure core of Parse: given the argument slice (without the
+// program name), it returns the resolved Flags or an error, never touching
+// os.Args, os.Exit, or global state. args[0] is the subcommand.
+func parseArgs(bin, defAddr, defPass string, args []string) (*Flags, error) {
+	if len(args) < 1 {
+		return nil, fmt.Errorf("missing subcommand (want pub|sub)")
+	}
+	cmd := args[0]
 	if cmd != "pub" && cmd != "sub" {
-		Usage(bin)
+		return nil, fmt.Errorf("unknown subcommand %q (want pub|sub)", cmd)
 	}
-	fs := flag.NewFlagSet(bin+" "+cmd, flag.ExitOnError)
+	fs := flag.NewFlagSet(bin+" "+cmd, flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // errors are returned, not printed here
 	f := &Flags{Cmd: cmd}
 	fs.StringVar(&f.Addr, "addr", defAddr, "bus host:port (NodePort)")
 	fs.StringVar(&f.Subject, "subject", "demo", "subject / topic / channel / queue")
@@ -63,15 +82,15 @@ func Parse(bin, defAddr, defPass string) *Flags {
 	fs.BoolVar(&f.JetStream, "jetstream", false, "NATS only: durable JetStream (create stream + durable consumer)")
 	fs.BoolVar(&f.Durable, "durable", false, "RabbitMQ only: durable quorum queue (work-queue semantics)")
 	fs.StringVar(&f.Sentinels, "sentinels", "", "ValKey only: comma-separated Sentinel host:port list (enables primary discovery)")
-	_ = fs.Parse(os.Args[2:])
-
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, err
+	}
 	iv, err := parseRate(*rate)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: invalid -rate %q: %v\n", bin, *rate, err)
-		os.Exit(2)
+		return nil, fmt.Errorf("invalid -rate %q: %w", *rate, err)
 	}
 	f.interval = iv
-	return f
+	return f, nil
 }
 
 // parseRate converts a "-rate" value into a per-message delay. Accepted
