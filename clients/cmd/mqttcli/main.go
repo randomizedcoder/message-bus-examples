@@ -1,7 +1,8 @@
 // mqttcli — a minimal MQTT pub/sub client for the Mosquitto bridge cluster.
 //
 //	mqttcli pub -addr 127.0.0.1:30883 -subject demo/topic -msg "hello"
-//	mqttcli sub -addr 127.0.0.1:30883 -subject demo/topic
+//	mqttcli pub -subject demo/topic -count 100 -rate 10/s
+//	mqttcli sub -subject demo/topic -count 5 -timeout 10s -json
 //
 // The brokers allow anonymous connections (lab config). Because the three
 // Mosquitto pods are full-mesh bridged, a publish that lands on any broker
@@ -12,9 +13,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/cli"
@@ -36,23 +34,25 @@ func main() {
 
 	switch f.Cmd {
 	case "pub":
-		if tok := c.Publish(f.Subject, 1, false, f.Msg); tok.Wait() && tok.Error() != nil {
-			log.Fatalf("publish: %v", tok.Error())
+		if err := f.PubLoop(func(body string) error {
+			tok := c.Publish(f.Subject, 1, false, body)
+			tok.Wait()
+			return tok.Error()
+		}); err != nil {
+			log.Fatalf("%v", err)
 		}
-		fmt.Printf("published to %q: %s\n", f.Subject, f.Msg)
 	case "sub":
+		lim := f.NewLimiter()
 		if tok := c.Subscribe(f.Subject, 1, func(_ mqtt.Client, m mqtt.Message) {
-			fmt.Printf("%s  [%s] %s\n", time.Now().Format(time.RFC3339), m.Topic(), string(m.Payload()))
+			f.Emit(m.Topic(), string(m.Payload()))
+			lim.Hit()
 		}); tok.Wait() && tok.Error() != nil {
 			log.Fatalf("subscribe: %v", tok.Error())
 		}
-		fmt.Printf("subscribed to %q on %s; waiting for messages (Ctrl-C to quit)\n", f.Subject, f.Addr)
-		waitForSignal()
+		log.Printf("subscribed to %q on %s; waiting for messages (Ctrl-C to quit)", f.Subject, f.Addr)
+		select {
+		case <-f.Stop():
+		case <-lim.Done():
+		}
 	}
-}
-
-func waitForSignal() {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
 }
