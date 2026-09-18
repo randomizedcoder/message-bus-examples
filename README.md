@@ -33,7 +33,7 @@ NodePort.
 
 | Bus | Deployment | HA mechanism | Host NodePort |
 |-----|-----------|--------------|---------------|
-| **NATS** | 3-node JetStream cluster | Raft re-election + client reconnect | `30422` (client 4222) |
+| **NATS** | 3-node JetStream cluster (hub) + 1 leaf node | Raft re-election + client reconnect | `30422` (client 4222), `30423` (leaf 4222) |
 | **RabbitMQ** | 3-node cluster (k8s peer discovery, quorum queues) | `pause_minority` + queue leader re-election | `30567` (AMQP), `30672` (mgmt UI) |
 | **MQTT** | 3× Mosquitto, full-mesh bridged (MQTT 3.1.1) | surviving brokers keep serving; client reconnect | `30883` (MQTT 1883) |
 | **ValKey** | 1 primary + 2 replicas + 3 Sentinels | Sentinel auto-failover | `30637` (client 6379) |
@@ -195,12 +195,15 @@ reproducible illustration of one concept. Every demo has its own `README.md`
 | `nix run .#nats-subjects` | [Subjects & hierarchies](https://docs.nats.io/concepts/subjects) — exact / `*` / `>` wildcard matching | [`clients/nats/subjects`](clients/nats/subjects) |
 | `nix run .#nats-request-reply` | [Request-Reply](https://docs.nats.io/concepts/request-reply) — synchronous RPC over `_INBOX` reply subjects | [`clients/nats/request-reply`](clients/nats/request-reply) |
 | `nix run .#nats-queue-groups` | [Queue Groups](https://docs.nats.io/concepts/queue-groups) — one message per group member (load balancing) | [`clients/nats/queue-groups`](clients/nats/queue-groups) |
+| `nix run .#nats-leaf` | [Topologies → Leaf Nodes](https://docs.nats.io/concepts/topologies) — subject interest bridged hub ⇄ leaf | [`clients/nats/leaf`](clients/nats/leaf) |
 
 ```bash
 # each defaults to 127.0.0.1:30422; pass a node IP when off-box
 nix run .#nats-subjects      -- -addr 10.33.33.10:30422
 nix run .#nats-request-reply -- -addr 10.33.33.10:30422 -count 5
 nix run .#nats-queue-groups  -- -addr 10.33.33.10:30422 -count 12 -workers 4
+# the leaf demo attaches to both the hub (:30422) and the leaf (:30423)
+nix run .#nats-leaf          -- -hub-addr 10.33.33.10:30422 -leaf-addr 10.33.33.13:30423
 ```
 
 Unlike the `pub`/`sub` CLIs these demos take no subcommand — the `nix run`

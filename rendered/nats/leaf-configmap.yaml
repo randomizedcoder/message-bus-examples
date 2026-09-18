@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-leaf-config
+  namespace: nats
+data:
+  nats.conf: |
+    # $POD_NAME is expanded from the environment at startup.
+    server_name: $POD_NAME
+    listen: 0.0.0.0:4222
+    http: 0.0.0.0:8222
+
+    leafnodes {
+      remotes: [
+        { url: "nats://nats-headless.nats.svc.cluster.local:7422" }
+      ]
+    }
+
