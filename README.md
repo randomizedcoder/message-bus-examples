@@ -181,6 +181,31 @@ nix run .#nats-pub -- -subject bench -count 100 -rate 10/s
 wait; wc -l got.jsonl
 ```
 
+### NATS concept examples
+
+Beyond the pub/sub CLIs, a set of small **self-contained NATS demos** each
+mirror one page of the [NATS core concepts](https://docs.nats.io/concepts)
+docs. Each runs all its parties in one process, prints a labeled trace,
+asserts the expected outcome, and exits — so `nix run .#<demo>` is a single,
+reproducible illustration of one concept. Every demo has its own `README.md`
+(topology diagram + explanation) in its source folder.
+
+| Demo | Concept | Source |
+|------|---------|--------|
+| `nix run .#nats-subjects` | [Subjects & hierarchies](https://docs.nats.io/concepts/subjects) — exact / `*` / `>` wildcard matching | [`clients/nats/subjects`](clients/nats/subjects) |
+| `nix run .#nats-request-reply` | [Request-Reply](https://docs.nats.io/concepts/request-reply) — synchronous RPC over `_INBOX` reply subjects | [`clients/nats/request-reply`](clients/nats/request-reply) |
+| `nix run .#nats-queue-groups` | [Queue Groups](https://docs.nats.io/concepts/queue-groups) — one message per group member (load balancing) | [`clients/nats/queue-groups`](clients/nats/queue-groups) |
+
+```bash
+# each defaults to 127.0.0.1:30422; pass a node IP when off-box
+nix run .#nats-subjects      -- -addr 10.33.33.10:30422
+nix run .#nats-request-reply -- -addr 10.33.33.10:30422 -count 5
+nix run .#nats-queue-groups  -- -addr 10.33.33.10:30422 -count 12 -workers 4
+```
+
+Unlike the `pub`/`sub` CLIs these demos take no subcommand — the `nix run`
+app is the binary directly.
+
 ### Durability & HA flags (opt-in)
 
 By default the CLIs are *liveness* demos — they move a message and exit. Three
@@ -283,15 +308,85 @@ NATS and RabbitMQ need no affinity.
 
 ---
 
-## Chaos / failover test
+## Testing
+
+Two complementary layers: fast **unit tests** for the shared client logic that
+run in the Nix sandbox, and a live **chaos / failover** harness that kills real
+nodes and measures how quickly each bus recovers.
+
+### Unit tests (`nix flake check`)
+
+The one piece of non-trivial host-side logic is the shared
+`clients/internal/cli` package — argument parsing and the pub/sub loop that
+every client's `main.go` reuses. `clients/internal/cli/cli_test.go` covers it
+with **table-driven** tests (one row per case, each with a `description` and an
+`expected`, spanning positive / negative / boundary / corner inputs):
+
+| Unit under test | What the rows assert |
+|-----------------|----------------------|
+| **`parseRate`** | `""` / `"0"` / whitespace → no throttle; `10/s`, `0.5/s`, `10`, `5/s` → the right per-message interval; `0/s` (deliberately asymmetric with bare `0`), negative, and non-numeric values → errors. |
+| **`parseArgs`** | default flag values; every flag parsed, including `-jetstream` / `-durable` / `-sentinels` and `-rate`→interval; missing / unknown subcommand, a flag before the subcommand, a bad `-rate`, an unknown flag, and a non-numeric `-count` → errors; `-h` → `flag.ErrHelp`. |
+| **`Limiter`** (`-count`) | reaching the limit closes `Done`; staying below it leaves `Done` open; extra `Hit`s past the limit are idempotent; `count ≤ 0` means unlimited. |
+| **`PubLoop`** (`-count`/`-rate`) | the default sends exactly one message (no sequence suffix); `count N` sends `N` sequence-numbered bodies (`msg 1`, `msg 2`, …); an error from `send` stops the loop and propagates. |
+
+To keep parsing testable without touching `os.Args`/`os.Exit`, `Parse` is a thin
+wrapper over a pure `parseArgs(bin, defAddr, defPass, args) (*Flags, error)`.
+
+```bash
+# in the dev shell
+nix develop -c bash -c 'cd clients && go test ./... -v'
+
+# or as part of the flake's checks (builds checks.<system>.cli-tests)
+nix flake check
+```
+
+`nix flake check` runs these in the same `buildGoModule` sandbox (vendored deps,
+no network), so a broken assertion fails the whole flake — the tests are a gate,
+not just a convenience. (Flakes only see git-tracked files, so `cli_test.go`
+must be committed for the check to exercise it.)
+
+### Chaos / failover test
 
 ```bash
 nix run .#k8s-chaos-failover -- --rounds=6 --buses=nats,mqtt,valkey,rabbitmq
 ```
 
-Kills one MicroVM at a time and measures, per bus, how long a host-side
-subscriber takes to receive fresh messages again. Output →
-`chaos-logs/summary.tsv`. See [`docs/resilience-testing.md`](docs/resilience-testing.md).
+Where the unit tests check the client in isolation, this harness proves the
+**clustered buses keep delivering while a node dies**. Each round:
+
+1. **Subscribe** — start a host-side subscriber per bus (the Go CLIs) on subject
+   `demo/chaos`, and prime each connection with one warm-up publish. Every
+   client connects to a **stable node's NodePort (cp0, which is never killed)**,
+   so the measurement isolates *in-cluster* failover from host↔node
+   reachability.
+2. **Kill** — stop one MicroVM (`k8s-vm-stop-one`), rotating through
+   `cp1,cp2,w3`, and record the kill timestamp.
+3. **Probe until recovered** — publish a uniquely-tagged probe once per second
+   until the subscriber receives it; the **recovery time** is the seconds from
+   kill to the first post-kill message delivered (or `TIMEOUT`).
+4. **Heal** — restart the node (`k8s-vm-start-one`), wait for it to rejoin, and
+   move to the next round.
+
+Results land in `chaos-logs/summary.tsv` (`round`, `node`, `bus`,
+`recovery_sec`). **What it demonstrates:** every bus survives the loss of any
+single node and resumes delivery on its own — NATS via JetStream Raft
+re-election + client reconnect, RabbitMQ via `pause_minority` + quorum-queue
+leader re-election, MQTT because a surviving bridged broker still serves, and
+ValKey via Sentinel promoting a replica to primary. It also proves the
+**harness contract** the clients are built around: the harness drives only the
+**default, no-flag** client paths (core NATS, fanout RabbitMQ, round-robin
+ValKey `-addr`, plain MQTT), so those must never change.
+
+> **Liveness vs. correctness.** The chaos harness measures *liveness* — does a
+> message flow again after a node dies. The opt-in
+> [`-jetstream` / `-durable` / `-sentinels` flags](#durability--ha-flags-opt-in)
+> are the *correctness* counterpart: they show messages **survive** the failure
+> (durable JetStream replay, persistent quorum queues) and that a writer
+> **follows the new primary** (ValKey Sentinel FailoverClient) rather than just
+> reconnecting somewhere.
+
+See [`docs/resilience-testing.md`](docs/resilience-testing.md) for the per-bus
+failover mechanics and expected behaviour.
 
 ---
 

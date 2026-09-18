@@ -29,6 +29,10 @@ let
       "cmd/rabbitmqcli"
       "cmd/mqttcli"
       "cmd/valkeycli"
+      # Self-contained NATS concept demos (see clients/nats/*/README.md).
+      "nats/subjects"
+      "nats/request-reply"
+      "nats/queue-groups"
     ];
     meta = {
       description = "Message-bus pub/sub CLI clients (NATS, RabbitMQ, MQTT, ValKey)";
@@ -68,13 +72,33 @@ let
     text = ''exec ${clients}/bin/${d.bin} ${d.sub} "$@"'';
   };
 
-  apps = builtins.listToAttrs (map (d: {
+  busApps = builtins.listToAttrs (map (d: {
     name = d.app;
     value = {
       type = "app";
       program = "${mkWrapper d}/bin/${d.app}";
     };
   }) defs);
+
+  # Self-contained NATS concept demos (sources under clients/nats/<concept>).
+  # Unlike the pub/sub CLIs these take no `pub`/`sub` subcommand, so they are
+  # exposed as the binary directly (no wrapper). `nix run .#nats-subjects`
+  # runs the whole demo and exits. (app name = nats-<concept>, binary = <concept>.)
+  exampleDefs = [
+    { app = "nats-subjects";      bin = "subjects"; }
+    { app = "nats-request-reply"; bin = "request-reply"; }
+    { app = "nats-queue-groups";  bin = "queue-groups"; }
+  ];
+
+  exampleApps = builtins.listToAttrs (map (d: {
+    name = d.app;
+    value = {
+      type = "app";
+      program = "${clients}/bin/${d.bin}";
+    };
+  }) exampleDefs);
+
+  apps = busApps // exampleApps;
 in
 {
   package = clients;
