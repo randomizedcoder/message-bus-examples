@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-1
+  namespace: valkey
+spec:
+  type: NodePort
+  selector:
+    statefulset.kubernetes.io/pod-name: valkey-1
+  ports:
+  - name: client
+    port: 6379
+    targetPort: 6379
+    nodePort: 30641
+  - name: sentinel
+    port: 26379
+    targetPort: 26379
+    nodePort: 30651
+

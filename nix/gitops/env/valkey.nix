@@ -23,6 +23,36 @@ let
   ns = c.namespace;
   fqdn = "valkey-headless.${ns}.svc.${constants.k8s.clusterDomain}";
   master0 = "valkey-0.${fqdn}";
+
+  # Per-pod NodePort Services: pod valkey-N is individually reachable from the
+  # host at <node>:${nodePortClientBase+N} (client) and
+  # <node>:${nodePortSentinelBase+N} (sentinel). The pods announce exactly
+  # these addresses (start-valkey.sh / start-sentinel.sh), so a host
+  # FailoverClient asks a Sentinel for the primary and connects straight to it,
+  # following failover. Selector uses the StatefulSet-injected pod-name label.
+  perPodServices = map (i: {
+    name = "valkey/service-pod-${toString i}.yaml";
+    content = ''
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: valkey-${toString i}
+        namespace: ${ns}
+      spec:
+        type: NodePort
+        selector:
+          statefulset.kubernetes.io/pod-name: valkey-${toString i}
+        ports:
+        - name: client
+          port: ${toString c.clientPort}
+          targetPort: ${toString c.clientPort}
+          nodePort: ${toString (c.nodePortClientBase + i)}
+        - name: sentinel
+          port: ${toString c.sentinelPort}
+          targetPort: ${toString c.sentinelPort}
+          nodePort: ${toString (c.nodePortSentinelBase + i)}
+    '';
+  }) (lib.range 0 (c.replicas - 1));
 in
 {
   manifests = [
@@ -46,9 +76,11 @@ in
 
           sentinel.conf: |
             port ${toString c.sentinelPort}
-            sentinel resolve-hostnames yes
-            sentinel announce-hostnames yes
-            sentinel monitor ${c.masterName} ${master0} ${toString c.clientPort} 2
+            # Seed at a stable node IP + valkey-0's client NodePort. Sentinel
+            # then learns the live primary/replica set from node-reachable
+            # addresses the pods announce (see start scripts), so a *host*
+            # client can follow failover. Quorum 2 of 3.
+            sentinel monitor ${c.masterName} ${constants.network.ipv4.cp0} ${toString c.nodePortClientBase} 2
             sentinel down-after-milliseconds ${c.masterName} 5000
             sentinel failover-timeout ${c.masterName} 10000
             sentinel parallel-syncs ${c.masterName} 1
@@ -57,19 +89,27 @@ in
             #!/bin/sh
             set -eu
             ORD="''${HOSTNAME##*-}"
-            MYHOST="$HOSTNAME.${fqdn}"
+            # Announce a node-reachable address (node IP + this pod's client
+            # NodePort) so both host clients and Sentinel reach a replica the
+            # same way. podAntiAffinity pins one valkey pod per node, so
+            # POD_HOST_IP uniquely identifies this pod.
+            ANNOUNCE_PORT=$((${toString c.nodePortClientBase} + ORD))
             CONF=/tmp/valkey.conf
             cat /config/valkey.conf > "$CONF"
             {
               echo "requirepass $VALKEY_PASSWORD"
               echo "masterauth $VALKEY_PASSWORD"
-              echo "replica-announce-ip $MYHOST"
+              echo "replica-announce-ip $POD_HOST_IP"
+              echo "replica-announce-port $ANNOUNCE_PORT"
             } >> "$CONF"
-            # Best-effort: ask any Sentinel who the current primary is.
-            MASTER=$(valkey-cli -h ${fqdn} -p ${toString c.sentinelPort} \
-              sentinel get-master-addr-by-name ${c.masterName} 2>/dev/null | head -n1 || true)
-            if [ -n "$MASTER" ] && [ "$MASTER" != "$MYHOST" ]; then
-              echo "replicaof $MASTER ${toString c.clientPort}" >> "$CONF"
+            # Best-effort bootstrap: ask any Sentinel who the current primary
+            # is (returns node-IP + client-NodePort, two lines).
+            ADDR=$(valkey-cli -h ${fqdn} -p ${toString c.sentinelPort} \
+              sentinel get-master-addr-by-name ${c.masterName} 2>/dev/null || true)
+            MIP=$(printf '%s\n' "$ADDR" | head -n1)
+            MPORT=$(printf '%s\n' "$ADDR" | tail -n1)
+            if [ -n "$MIP" ] && [ "$MIP" != "$POD_HOST_IP" ]; then
+              echo "replicaof $MIP $MPORT" >> "$CONF"
             elif [ "$ORD" != "0" ]; then
               echo "replicaof ${master0} ${toString c.clientPort}" >> "$CONF"
             fi
@@ -78,12 +118,16 @@ in
           start-sentinel.sh: |
             #!/bin/sh
             set -eu
-            MYHOST="$HOSTNAME.${fqdn}"
+            ORD="''${HOSTNAME##*-}"
+            # Announce this Sentinel at node IP + its own sentinel NodePort so
+            # host clients and peer Sentinels reach it via the node.
+            ANNOUNCE_PORT=$((${toString c.nodePortSentinelBase} + ORD))
             CONF=/tmp/sentinel.conf
             cat /config/sentinel.conf > "$CONF"
             {
               echo "sentinel auth-pass ${c.masterName} $VALKEY_PASSWORD"
-              echo "sentinel announce-ip $MYHOST"
+              echo "sentinel announce-ip $POD_HOST_IP"
+              echo "sentinel announce-port $ANNOUNCE_PORT"
             } >> "$CONF"
             exec valkey-sentinel "$CONF"
       '';
@@ -182,6 +226,12 @@ in
                     secretKeyRef:
                       name: valkey-credentials
                       key: password
+                # Node IP backing this pod's NodePort — announced so replicas
+                # and Sentinel are reachable from the host (see start scripts).
+                - name: POD_HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.hostIP
                 ports:
                 - containerPort: ${toString c.clientPort}
                   name: client
@@ -216,6 +266,10 @@ in
                     secretKeyRef:
                       name: valkey-credentials
                       key: password
+                - name: POD_HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.hostIP
                 ports:
                 - containerPort: ${toString c.sentinelPort}
                   name: sentinel
@@ -278,5 +332,5 @@ in
               selfHeal: true
       '';
     }
-  ];
+  ] ++ perPodServices;
 }
