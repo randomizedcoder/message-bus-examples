@@ -1,0 +1,40 @@
+# ArgoCD Helm values — rendered at Nix build time.
+server:
+  service:
+    type: NodePort
+    nodePortHttps: 30443
+configs:
+  params:
+    server.insecure: true
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+repoServer:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: metrics
+    failureThreshold: 30
+    periodSeconds: 5
+  livenessProbe:
+    timeoutSeconds: 5
+    initialDelaySeconds: 0
+    periodSeconds: 30
+    failureThreshold: 5
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+# Disable Redis auth init Job — the argocd v3.3.6 image doesn't
+# expose the `argocd` binary needed by the hook Job, and a test
+# cluster doesn't need Redis auth anyway.
+redisSecretInit:
+  enabled: false
+

@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-config
+  namespace: valkey
+data:
+  valkey.conf: |
+    port 6379
+    dir /data
+    appendonly yes
+    protected-mode no
+    repl-diskless-sync yes
+    repl-diskless-load on-empty-db
+
+  sentinel.conf: |
+    port 26379
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel monitor mymaster valkey-0.valkey-headless.valkey.svc.cluster.local 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 10000
+    sentinel parallel-syncs mymaster 1
+
+  start-valkey.sh: |
+    #!/bin/sh
+    set -eu
+    ORD="${HOSTNAME##*-}"
+    MYHOST="$HOSTNAME.valkey-headless.valkey.svc.cluster.local"
+    CONF=/tmp/valkey.conf
+    cat /config/valkey.conf > "$CONF"
+    {
+      echo "requirepass $VALKEY_PASSWORD"
+      echo "masterauth $VALKEY_PASSWORD"
+      echo "replica-announce-ip $MYHOST"
+    } >> "$CONF"
+    # Best-effort: ask any Sentinel who the current primary is.
+    MASTER=$(valkey-cli -h valkey-headless.valkey.svc.cluster.local -p 26379 \
+      sentinel get-master-addr-by-name mymaster 2>/dev/null | head -n1 || true)
+    if [ -n "$MASTER" ] && [ "$MASTER" != "$MYHOST" ]; then
+      echo "replicaof $MASTER 6379" >> "$CONF"
+    elif [ "$ORD" != "0" ]; then
+      echo "replicaof valkey-0.valkey-headless.valkey.svc.cluster.local 6379" >> "$CONF"
+    fi
+    exec valkey-server "$CONF"
+
+  start-sentinel.sh: |
+    #!/bin/sh
+    set -eu
+    MYHOST="$HOSTNAME.valkey-headless.valkey.svc.cluster.local"
+    CONF=/tmp/sentinel.conf
+    cat /config/sentinel.conf > "$CONF"
+    {
+      echo "sentinel auth-pass mymaster $VALKEY_PASSWORD"
+      echo "sentinel announce-ip $MYHOST"
+    } >> "$CONF"
+    exec valkey-sentinel "$CONF"
+

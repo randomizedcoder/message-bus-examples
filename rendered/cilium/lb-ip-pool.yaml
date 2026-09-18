@@ -1,0 +1,16 @@
+# v2 is stable for CiliumLoadBalancerIPPool in 1.19; policy below
+# stays at v2alpha1 because CiliumL2AnnouncementPolicy hasn't
+# graduated yet.
+apiVersion: cilium.io/v2
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: lab-lb-pool
+  # No sync-wave — must land in the same wave as install.yaml
+  # (wave 0). Otherwise ArgoCD blocks waiting for the
+  # cilium-ingress Service to become healthy before applying
+  # the pool that assigns its LoadBalancerIP. Circular dep.
+spec:
+  blocks:
+  - start: "10.33.33.50"
+    stop:  "10.33.33.50"
+

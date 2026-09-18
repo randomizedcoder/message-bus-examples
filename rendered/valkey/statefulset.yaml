@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  namespace: valkey
+spec:
+  serviceName: valkey-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: valkey
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: valkey
+        image: messagebus.local/valkey:9.1.1
+        imagePullPolicy: Never
+        command: ["/bin/sh", "/config/start-valkey.sh"]
+        env:
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: valkey-credentials
+              key: password
+        ports:
+        - containerPort: 6379
+          name: client
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "valkey-cli -a \"$VALKEY_PASSWORD\" -p 6379 ping | grep -q PONG"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: data
+          mountPath: /data
+        # No /tmp in the minimal Nix image; the start script writes
+        # (and valkey-server rewrites) its config there.
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      - name: sentinel
+        image: messagebus.local/valkey:9.1.1
+        imagePullPolicy: Never
+        command: ["/bin/sh", "/config/start-sentinel.sh"]
+        env:
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: valkey-credentials
+              key: password
+        ports:
+        - containerPort: 26379
+          name: sentinel
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        # Sentinel rewrites its config file at runtime (persisted
+        # master/replica state); /tmp must exist and be writable.
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
+      volumes:
+      - name: config
+        configMap:
+          name: valkey-config
+          defaultMode: 0755
+      - name: tmp
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 2Gi
+
