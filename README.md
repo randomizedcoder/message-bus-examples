@@ -237,6 +237,16 @@ Sentinel-behind-NAT pattern) — acceptable for this lab. The round-robin `valke
 NodePort (`30637`, `sessionAffinity: ClientIP`) still serves the default
 non-Sentinel `-addr` path and the chaos harness.
 
+> **Security note (accepted lab tradeoff):** exposing Sentinel on a NodePort
+> makes it reachable from the host/bridge network, and Sentinel here has **no
+> `requirepass`** — so anyone who can route to a node IP can query topology or
+> issue control commands (e.g. `SENTINEL FAILOVER`). This is accepted for this
+> isolated lab (private `10.33.33.0/24` bridge, VM firewall already disabled,
+> and the ValKey **data** port still password-protected via `requirepass`).
+> Hardening for a real deployment: set `requirepass` on the Sentinels (plus
+> `SentinelPassword` on the client and a matching sentinel-to-sentinel auth
+> setup), or keep Sentinel off the host and reach the primary another way.
+
 ### Host pub/sub delivery (`sessionAffinity`)
 
 A host client reaches a bus through **one** NodePort that round-robins across
