@@ -1,7 +1,8 @@
 // valkeycli — a minimal ValKey pub/sub client (RESP PUBLISH/SUBSCRIBE).
 //
 //	valkeycli pub -addr 127.0.0.1:30637 -subject demo -msg "hello" -pass "$VALKEY_PASS"
-//	valkeycli sub -addr 127.0.0.1:30637 -subject demo -pass "$VALKEY_PASS"
+//	valkeycli pub -subject demo -count 100 -rate 10/s -pass "$VALKEY_PASS"
+//	valkeycli sub -subject demo -count 5 -timeout 10s -json -pass "$VALKEY_PASS"
 //
 // NOTE: Valkey/Redis pub/sub is fire-and-forget and not persisted; during
 // a Sentinel failover in-flight messages can drop. Fetch the password:
@@ -14,13 +15,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/cli"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -37,19 +37,31 @@ func main() {
 
 	switch f.Cmd {
 	case "pub":
-		if err := rdb.Publish(ctx, f.Subject, f.Msg).Err(); err != nil {
-			log.Fatalf("publish (check -pass): %v", err)
+		if err := f.PubLoop(func(body string) error {
+			return rdb.Publish(ctx, f.Subject, body).Err()
+		}); err != nil {
+			log.Fatalf("%v (check -pass)", err)
 		}
-		fmt.Printf("published to %q: %s\n", f.Subject, f.Msg)
 	case "sub":
 		ps := rdb.Subscribe(ctx, f.Subject)
 		defer ps.Close()
 		if _, err := ps.Receive(ctx); err != nil {
 			log.Fatalf("subscribe (check -pass): %v", err)
 		}
-		fmt.Printf("subscribed to %q on %s; waiting for messages (Ctrl-C to quit)\n", f.Subject, f.Addr)
-		for m := range ps.Channel() {
-			fmt.Printf("%s  [%s] %s\n", time.Now().Format(time.RFC3339), m.Channel, m.Payload)
+		log.Printf("subscribed to %q on %s; waiting for messages (Ctrl-C to quit)", f.Subject, f.Addr)
+		stop := f.Stop()
+		lim := f.NewLimiter()
+		ch := ps.Channel()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-lim.Done():
+				return
+			case m := <-ch:
+				f.Emit(m.Channel, m.Payload)
+				lim.Hit()
+			}
 		}
 	}
 }

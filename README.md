@@ -156,6 +156,31 @@ Each binary takes `pub`/`sub` as its first argument; the `nix run
 .#<bus>-<pub|sub>` apps are thin wrappers that prepend it. Sources live in
 `clients/cmd/*` (one small `main.go` per bus).
 
+### Scripting flags
+
+Beyond `-addr`/`-subject`/`-msg`/`-user`/`-pass`, every client shares a set
+of flags (in `clients/internal/cli`) that make the CLIs scriptable — useful
+for load, demos, and tests:
+
+| Flag | Applies to | Meaning |
+|------|-----------|---------|
+| `-count n` | pub / sub | pub: send `n` messages (default 1); sub: **exit after** `n` messages (0 = run until Ctrl-C) |
+| `-rate N/s` | pub | throttle to `N` messages/second (fractional ok, e.g. `0.5/s`); default is unthrottled |
+| `-timeout d` | sub | exit after duration `d` (e.g. `10s`); 0 = run until Ctrl-C |
+| `-json` | sub | emit one `{"ts","subject","data"}` object per line instead of a human line |
+
+When a publisher sends more than one message, a 1-based sequence number is
+appended to `-msg` (`hello 1`, `hello 2`, …) so each payload is distinct.
+`-count`/`-timeout` make a subscriber self-terminating, so a whole pub/sub
+exchange fits in a script:
+
+```bash
+# publish 100 messages at 10/s; subscriber collects 100 (or gives up after 30s)
+nix run .#nats-sub -- -subject bench -count 100 -timeout 30s -json > got.jsonl &
+nix run .#nats-pub -- -subject bench -count 100 -rate 10/s
+wait; wc -l got.jsonl
+```
+
 ### Host pub/sub delivery (`sessionAffinity`)
 
 A host client reaches a bus through **one** NodePort that round-robins across
