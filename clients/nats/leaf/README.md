@@ -43,6 +43,15 @@ flowchart LR
 The demo opens two connections (hub + leaf) and, for each direction, subscribes
 on one side and publishes on the other, asserting the message crosses the link.
 
+> **Security (accepted lab tradeoff).** Like the rest of this lab's buses, the
+> NATS hub and leaf run **anonymous, without TLS**. The hub's leafnode listener
+> (`:7422`) is **in-cluster only** — it is not exposed on a NodePort, so a leaf
+> connection can only be made from within the pod network (the same posture as
+> the cluster routes on `:6222`). The leaf's client port is exposed on NodePort
+> `30423` with the same no-auth posture as the hub's `30422`. This is acceptable
+> only on the isolated `10.33.33.0/24` lab network; a real leaf link should use
+> credentials + TLS and scoped [accounts](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/accounts).
+
 ## Run it
 
 ```bash
