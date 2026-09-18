@@ -30,6 +30,11 @@ type Flags struct {
 	Timeout time.Duration // sub: exit after this long (0 = run until Ctrl-C)
 	JSON    bool          // emit messages as one JSON object per line
 
+	// Per-bus HA opt-ins (ignored by the buses they don't apply to).
+	JetStream bool   // NATS: durable JetStream stream + durable consumer
+	Durable   bool   // RabbitMQ: durable quorum queue (work-queue semantics)
+	Sentinels string // ValKey: comma-separated Sentinel host:port list → FailoverClient
+
 	interval time.Duration // per-message pub delay, derived from -rate
 }
 
@@ -55,6 +60,9 @@ func Parse(bin, defAddr, defPass string) *Flags {
 	rate := fs.String("rate", "", "pub throttle, e.g. 10/s or 0.5/s (default: send as fast as possible)")
 	fs.DurationVar(&f.Timeout, "timeout", 0, "sub: exit after this long, e.g. 10s (0 = run until Ctrl-C)")
 	fs.BoolVar(&f.JSON, "json", false, "emit each message as a JSON object per line")
+	fs.BoolVar(&f.JetStream, "jetstream", false, "NATS only: durable JetStream (create stream + durable consumer)")
+	fs.BoolVar(&f.Durable, "durable", false, "RabbitMQ only: durable quorum queue (work-queue semantics)")
+	fs.StringVar(&f.Sentinels, "sentinels", "", "ValKey only: comma-separated Sentinel host:port list (enables primary discovery)")
 	_ = fs.Parse(os.Args[2:])
 
 	iv, err := parseRate(*rate)
@@ -89,7 +97,8 @@ func parseRate(s string) (time.Duration, error) {
 func Usage(bin string) {
 	fmt.Fprintf(os.Stderr,
 		"usage: %s <pub|sub> [-addr host:port] [-subject name] [-msg text]\n"+
-			"          [-user u] [-pass p] [-count n] [-rate N/s] [-timeout d] [-json]\n", bin)
+			"          [-user u] [-pass p] [-count n] [-rate N/s] [-timeout d] [-json]\n"+
+			"          [-jetstream (nats)] [-durable (rabbitmq)] [-sentinels h:p,... (valkey)]\n", bin)
 	os.Exit(2)
 }
 

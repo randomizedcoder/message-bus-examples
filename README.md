@@ -181,6 +181,62 @@ nix run .#nats-pub -- -subject bench -count 100 -rate 10/s
 wait; wc -l got.jsonl
 ```
 
+### Durability & HA flags (opt-in)
+
+By default the CLIs are *liveness* demos — they move a message and exit. Three
+opt-in, per-bus flags turn them into *correctness* demos that exercise each
+bus's durability / failover guarantee. All are additive: the default
+subcommands, `-addr`/`-subject`/`-msg`, and env-var creds are unchanged (the
+chaos harness keeps working), and no new Go dependencies are pulled in.
+
+| Flag | Bus | What it does |
+|------|-----|--------------|
+| `-jetstream` | NATS | Uses **JetStream** instead of core NATS: `pub` idempotently creates a persistent, 3-replica (`FileStorage`, `Replicas: 3`) stream named `MBEX_<SUBJECT>` and publishes with an ack; `sub` binds a **durable consumer** and acks each message. Messages persist and replay across restarts / failover. |
+| `-durable` | RabbitMQ | Switches from the default ephemeral fanout to a durable **quorum queue** `<subject>.quorum` (`x-queue-type: quorum`, replicated across all 3 nodes) with persistent messages. This is work-queue (shared, competing-consumer) semantics that survives a broker/node loss. |
+| `-sentinels h:p,…` | ValKey | Connects via a go-redis **FailoverClient**: it asks the listed Sentinels for the current primary and always connects there, **following automatic failover**. Every `PUBLISH` reaches the primary (and so fans out to all replicas' subscribers). |
+
+RabbitMQ **publisher confirms are always on** — every `pub` waits for the
+broker's ack and reports a nack/timeout as an error, on both the default and
+`-durable` paths (one extra round-trip; the one-shot chaos publish still works).
+
+```bash
+# NATS: publish 3 durable messages, then replay them from the stream later
+nix run .#nats-pub -- -addr 10.33.33.10:30422 -jetstream -subject orders -count 3
+nix run .#nats-sub -- -addr 10.33.33.10:30422 -jetstream -subject orders -count 3   # replays the 3
+
+# RabbitMQ: durable quorum queue that survives a broker kill
+nix run .#rabbitmq-pub -- -addr 10.33.33.10:30567 -durable -subject jobs -count 3 -pass "$RABBITMQ_PASS"
+nix run .#rabbitmq-sub -- -addr 10.33.33.10:30567 -durable -subject jobs -count 3 -pass "$RABBITMQ_PASS"
+
+# ValKey: follow the primary through a failover via Sentinel
+nix run .#valkey-pub -- -sentinels 10.33.33.10:30650,10.33.33.10:30651,10.33.33.10:30652 \
+  -subject demo -msg "to the primary" -pass "$VALKEY_PASS"
+```
+
+#### ValKey Sentinel is host-reachable (per-pod NodePorts + node-IP announces)
+
+For a **host** FailoverClient to reach the primary Sentinel names, each pod must
+advertise a node-reachable address rather than an in-cluster
+`*.valkey-headless…svc.cluster.local` FQDN. So each `valkey-N` pod gets its own
+NodePort Service and announces the node IP + that port:
+
+| Pod | Client NodePort | Sentinel NodePort |
+|-----|-----------------|-------------------|
+| `valkey-0` | `30640` | `30650` |
+| `valkey-1` | `30641` | `30651` |
+| `valkey-2` | `30642` | `30652` |
+
+Each pod exports `POD_HOST_IP` (downward API `status.hostIP`) and sets
+`replica-announce-ip/-port` (valkey) and `sentinel announce-ip/-port` (sentinel)
+to `<node-IP>:<its NodePort>`; `podAntiAffinity` keeps one valkey pod per node,
+so the host IP uniquely identifies a pod. Sentinel is **seeded** at a stable
+node IP + `valkey-0`'s client NodePort (`10.33.33.10:30640`) and learns the live
+primary/replica set from those announcements. The trade-off is that in-cluster
+replication + Sentinel health checks now traverse NodePort (the standard
+Sentinel-behind-NAT pattern) — acceptable for this lab. The round-robin `valkey`
+NodePort (`30637`, `sessionAffinity: ClientIP`) still serves the default
+non-Sentinel `-addr` path and the chaos harness.
+
 ### Host pub/sub delivery (`sessionAffinity`)
 
 A host client reaches a bus through **one** NodePort that round-robins across

@@ -222,7 +222,13 @@ rec {
       clientPort   = 6379;
       sentinelPort = 26379;
       masterName   = "mymaster";
-      nodePort     = 30637;  # client 6379 → host :30637
+      nodePort     = 30637;  # round-robin client 6379 → host :30637 (default path)
+      # Per-pod NodePorts for host-reachable Sentinel primary discovery: pod
+      # valkey-N is reachable at <node>:${nodePortClientBase+N} (client) and
+      # <node>:${nodePortSentinelBase+N} (sentinel). Pods announce these so a
+      # host FailoverClient can follow failover.
+      nodePortClientBase   = 30640;  # valkey-{0,1,2} client   → 30640/30641/30642
+      nodePortSentinelBase = 30650;  # valkey-{0,1,2} sentinel → 30650/30651/30652
     };
   };
 

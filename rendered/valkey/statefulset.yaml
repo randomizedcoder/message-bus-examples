@@ -32,6 +32,12 @@ spec:
             secretKeyRef:
               name: valkey-credentials
               key: password
+        # Node IP backing this pod's NodePort — announced so replicas
+        # and Sentinel are reachable from the host (see start scripts).
+        - name: POD_HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
         ports:
         - containerPort: 6379
           name: client
@@ -66,6 +72,10 @@ spec:
             secretKeyRef:
               name: valkey-credentials
               key: password
+        - name: POD_HOST_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
         ports:
         - containerPort: 26379
           name: sentinel
