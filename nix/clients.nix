@@ -36,6 +36,21 @@ let
     };
   };
 
+  # Same source + vendored deps as `clients`, but built only to run the
+  # module's unit tests (`go test ./...` covers internal/cli despite the
+  # subPackages restriction above). Wired into `nix flake check`.
+  tests = clients.overrideAttrs (_: {
+    pname = "message-bus-clients-tests";
+    doCheck = true;
+    checkPhase = ''
+      runHook preCheck
+      go test ./...
+      runHook postCheck
+    '';
+    # We only care that the tests passed — skip installing binaries.
+    installPhase = "touch $out";
+  });
+
   # (appName, binary, subcommand) triples → wrapper + flake app.
   defs = [
     { app = "nats-pub";     bin = "natscli";     sub = "pub"; }
@@ -63,5 +78,5 @@ let
 in
 {
   package = clients;
-  inherit apps;
+  inherit tests apps;
 }

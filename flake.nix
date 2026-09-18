@@ -156,6 +156,14 @@
           // { message-bus-clients = clients.package; }
         );
 
+        # ─── Checks (`nix flake check`) ────────────────────────────────
+        # Table-driven unit tests for the shared cli package (rate parsing,
+        # arg handling, Limiter, PubLoop). Runs `go test ./...` in the same
+        # buildGoModule sandbox (vendored deps, no network).
+        checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          cli-tests = clients.tests;
+        };
+
         devShells.default = import (nixDir + "/shell.nix") { inherit pkgs; };
 
         # ─── Apps (Linux only) ─────────────────────────────────────────
