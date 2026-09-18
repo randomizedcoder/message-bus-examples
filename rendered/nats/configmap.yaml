@@ -16,6 +16,12 @@ data:
       max_file_store: 2GB
     }
 
+    # Accept leaf-node connections (the leaf pod on the worker dials
+    # this listener and bridges subject interest into the cluster).
+    leafnodes {
+      listen: 0.0.0.0:7422
+    }
+
     cluster {
       name: nats-cluster
       listen: 0.0.0.0:6222

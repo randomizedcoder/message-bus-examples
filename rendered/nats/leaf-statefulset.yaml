@@ -1,37 +1,21 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: nats
+  name: nats-leaf
   namespace: nats
 spec:
-  serviceName: nats-headless
-  replicas: 3
-  podManagementPolicy: Parallel
+  serviceName: nats-leaf-headless
+  replicas: 1
   selector:
     matchLabels:
-      app: nats
+      app: nats-leaf
   template:
     metadata:
       labels:
-        app: nats
+        app: nats-leaf
     spec:
-      affinity:
-        # One nats pod per node ...
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - labelSelector:
-              matchLabels:
-                app: nats
-            topologyKey: kubernetes.io/hostname
-        # ... and keep the cluster (hub) on the control-plane nodes,
-        # leaving the worker node free for the single leaf pod.
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-              - key: kubernetes.io/hostname
-                operator: In
-                values: [ k8s-cp0, k8s-cp1, k8s-cp2 ]
+      nodeSelector:
+        kubernetes.io/hostname: k8s-w3
       containers:
       - name: nats
         image: messagebus.local/nats:2.14.6
@@ -45,12 +29,8 @@ spec:
         ports:
         - containerPort: 4222
           name: client
-        - containerPort: 6222
-          name: cluster
         - containerPort: 8222
           name: monitor
-        - containerPort: 7422
-          name: leaf
         livenessProbe:
           httpGet:
             path: /healthz
@@ -66,8 +46,6 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /etc/nats
-        - name: data
-          mountPath: /data
         resources:
           requests:
             cpu: 100m
@@ -78,14 +56,5 @@ spec:
       volumes:
       - name: config
         configMap:
-          name: nats-config
-  volumeClaimTemplates:
-  - metadata:
-      name: data
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      storageClassName: local-path
-      resources:
-        requests:
-          storage: 2Gi
+          name: nats-leaf-config
 

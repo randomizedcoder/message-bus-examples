@@ -187,6 +187,11 @@ rec {
       clusterPort = 6222;
       monitorPort = 8222;
       nodePort    = 30422;   # client 4222 → host :30422
+      # Leaf-node topology: the 3 cluster pods (hub) run on the control-plane
+      # nodes and accept leaf connections on leafPort; a single leaf pod runs
+      # on the worker node and is reachable from the host on nodePortLeaf.
+      leafPort     = 7422;   # hub leafnode listener / leaf remote target
+      nodePortLeaf = 30423;  # leaf client 4222 → host :30423
     };
     rabbitmq = {
       namespace     = "rabbitmq";

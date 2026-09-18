@@ -33,6 +33,7 @@ let
       "nats/subjects"
       "nats/request-reply"
       "nats/queue-groups"
+      "nats/leaf"
     ];
     meta = {
       description = "Message-bus pub/sub CLI clients (NATS, RabbitMQ, MQTT, ValKey)";
@@ -88,6 +89,7 @@ let
     { app = "nats-subjects";      bin = "subjects"; }
     { app = "nats-request-reply"; bin = "request-reply"; }
     { app = "nats-queue-groups";  bin = "queue-groups"; }
+    { app = "nats-leaf";          bin = "leaf"; }
   ];
 
   exampleApps = builtins.listToAttrs (map (d: {
