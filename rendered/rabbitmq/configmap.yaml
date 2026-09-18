@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: rabbitmq
+data:
+  enabled_plugins: |
+    [rabbitmq_management,rabbitmq_peer_discovery_k8s,rabbitmq_prometheus].
+
+  rabbitmq.conf: |
+    cluster_formation.peer_discovery_backend = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    cluster_formation.k8s.address_type = hostname
+    cluster_formation.k8s.service_name = rabbitmq-headless
+    cluster_formation.k8s.hostname_suffix = .rabbitmq-headless.rabbitmq.svc.cluster.local
+    cluster_partition_handling = pause_minority
+    queue_master_locator = min-masters
+    loopback_users = none
+    management.tcp.port = 15672
+
+  start-rabbitmq.sh: |
+    #!/bin/sh
+    set -eu
+    export HOME=/var/lib/rabbitmq
+    mkdir -p "$HOME"
+    # Shared Erlang cookie (mounted from the Secret) → the file
+    # every node reads to authenticate to its peers.
+    cp /secret/RABBITMQ_ERLANG_COOKIE "$HOME/.erlang.cookie"
+    chmod 600 "$HOME/.erlang.cookie"
+    # RABBITMQ_NODENAME / RABBITMQ_USE_LONGNAME come from the pod env
+    # (see the StatefulSet) so the CLI tools agree with the server.
+    export RABBITMQ_CONFIG_FILE=/etc/rabbitmq/rabbitmq
+    export RABBITMQ_ENABLED_PLUGINS_FILE=/etc/rabbitmq/enabled_plugins
+    exec rabbitmq-server
+

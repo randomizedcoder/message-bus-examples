@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq
+spec:
+  serviceName: rabbitmq-headless
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      serviceAccountName: rabbitmq
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: rabbitmq
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: rabbitmq
+        image: messagebus.local/rabbitmq:4.2.5
+        imagePullPolicy: Never
+        command: ["/bin/sh", "/etc/rabbitmq/start-rabbitmq.sh"]
+        # Node name + long-name mode live in the POD env (not just
+        # the start script) so that rabbitmqctl / rabbitmq-diagnostics
+        # — including the readiness/liveness probes — target the same
+        # `rabbit@<pod>.<headless-fqdn>` node the server runs as.
+        # (The Erlang cookie arrives via envFrom below, so the CLI
+        # authenticates too.) ELIXIR_ERL_OPTIONS=+fnu forces UTF-8
+        # filename encoding — the minimal Nix image has no locale
+        # archive, so Erlang would otherwise default to latin1.
+        env:
+        - name: RABBITMQ_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: RABBITMQ_USE_LONGNAME
+          value: "true"
+        - name: RABBITMQ_NODENAME
+          value: "rabbit@$(RABBITMQ_POD_NAME).rabbitmq-headless.rabbitmq.svc.cluster.local"
+        - name: ELIXIR_ERL_OPTIONS
+          value: "+fnu"
+        # Default user/password + Erlang cookie come from the Secret.
+        envFrom:
+        - secretRef:
+            name: rabbitmq-credentials
+        ports:
+        - containerPort: 5672
+          name: amqp
+        - containerPort: 15672
+          name: management
+        - containerPort: 4369
+          name: epmd
+        - containerPort: 25672
+          name: dist
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "rabbitmq-diagnostics -q ping"]
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "rabbitmq-diagnostics -q ping"]
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 15
+        volumeMounts:
+        - name: config
+          mountPath: /etc/rabbitmq
+        - name: cookie
+          mountPath: /secret
+          readOnly: true
+        - name: data
+          mountPath: /var/lib/rabbitmq
+        resources:
+          requests:
+            cpu: 200m
+            memory: 384Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+      volumes:
+      - name: config
+        configMap:
+          name: rabbitmq-config
+          defaultMode: 0755
+      - name: cookie
+        secret:
+          secretName: rabbitmq-credentials
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 2Gi
+

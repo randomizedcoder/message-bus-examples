@@ -1,0 +1,97 @@
+# Cilium Helm values — rendered at Nix build time.
+kubeProxyReplacement: true
+k8sServiceHost: "10.33.33.1"
+k8sServicePort: "6443"
+
+ipam:
+  mode: kubernetes
+
+ipv4:
+  enabled: true
+ipv6:
+  enabled: true
+
+bpf:
+  masquerade: true
+
+# ─── Hubble: flow visibility, UI, metrics ───────────────────────
+hubble:
+  enabled: true
+  # Test env — mTLS disabled so `hubble` CLI from host just works.
+  tls:
+    enabled: false
+  peerService:
+    enabled: true
+  relay:
+    enabled: true
+    startupProbe:
+      failureThreshold: 40
+    service:
+      type: NodePort
+      nodePort: 31245
+  ui:
+    enabled: true
+    service:
+      type: NodePort
+      nodePort: 31234
+  metrics:
+    enableOpenMetrics: true
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - "httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction"
+
+# ─── Expose cilium-agent + operator Prometheus endpoints ────────
+prometheus:
+  enabled: true
+  port: 9962
+
+operator:
+  replicas: 1
+  prometheus:
+    enabled: true
+    port: 9963
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# ─── Ingress (replaces ingress-nginx) ───────────────────────────
+# Cilium's built-in Envoy serves the cluster's Ingress objects.
+# Exposed through a single LoadBalancer Service (`cilium-ingress`
+# in kube-system) whose ExternalIP is assigned from the
+# CiliumLoadBalancerIPPool below and advertised on the LAN via L2
+# ARP announcements. Phase-2: swap l2announcements → bgpControlPlane,
+# same VIP, same Service, same Ingress — no further rewrite.
+ingressController:
+  enabled: true
+  default: true              # make "cilium" the default IngressClass
+  loadbalancerMode: shared   # one cilium-ingress Service for all Ingresses
+  enforceHttps: false        # redirect at the app layer if needed
+  service:
+    type: LoadBalancer
+
+# ─── L2 announcements (LAN-scoped VIP advertisement) ────────────
+# Needed for the LoadBalancer Service above to actually be
+# reachable from the host without a real cloud LB. Cilium elects a
+# single agent to ARP-reply for the VIP; on node loss another takes
+# over (see chaos-failover test).
+l2announcements:
+  enabled: true
+
+# L2 announcements talk to the K8s API a lot (leases for VIP
+# ownership). Bump the client-side QPS/burst per Cilium docs to
+# avoid throttling with a small cluster + tight leases.
+k8sClientRateLimit:
+  qps: 10
+  burst: 20
+

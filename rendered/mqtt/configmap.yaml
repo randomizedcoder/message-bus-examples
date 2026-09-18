@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mqtt-config
+  namespace: mqtt
+data:
+  mosquitto.conf: |
+    # The minimal Nix image has no 'mosquitto'/'nobody' user, so
+    # tell mosquitto to keep running as root instead of trying (and
+    # failing) to drop privileges.
+    user root
+    listener 1883 0.0.0.0
+    allow_anonymous true
+    persistence true
+    persistence_location /data/
+
+  start-mosquitto.sh: |
+    #!/bin/sh
+    set -eu
+    ORD="${HOSTNAME##*-}"
+    CONF=/tmp/mosquitto.conf
+    cat /config/mosquitto.conf > "$CONF"
+    # Full-mesh bridge: forward local pubs OUT to every other pod.
+    # (printf appends, not a heredoc — keeps the config indentation-safe.)
+    i=0
+    while [ "$i" -lt 3 ]; do
+      if [ "$i" != "$ORD" ]; then
+        peer="mqtt-$i.mqtt-headless.mqtt.svc.cluster.local"
+        {
+          printf '\nconnection bridge-to-%s\n' "$i"
+          printf 'address %s:%s\n' "$peer" "1883"
+          printf 'topic # out 0 "" ""\n'
+          # Bridge over MQTT 3.1.1, not v5: Mosquitto 2.x v5 bridges
+          # negotiate topic aliases and then tear themselves down with
+          # "PUBLISH invalid topic alias" protocol errors. 3.1.1 has no
+          # topic aliases and bridges reliably. (Client↔broker links
+          # are independent and can still use v5.)
+          printf 'bridge_protocol_version mqttv311\n'
+          printf 'cleansession true\n'
+          printf 'try_private true\n'
+          printf 'notifications false\n'
+          printf 'restart_timeout 5\n'
+        } >> "$CONF"
+      fi
+      i=$((i + 1))
+    done
+    exec mosquitto -c "$CONF"
+
