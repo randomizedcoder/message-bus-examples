@@ -157,3 +157,84 @@ func TestSetupDisabled(t *testing.T) {
 		t.Fatalf("Setup(disabled) = %T, expected metrics.Nop", r)
 	}
 }
+
+// --- micro-benchmarks (execute under `go test -bench`; compile-checked by
+// `go test ./...`). They exercise the per-message subscriber hot paths. ---
+
+// liveMetrics builds a real OTel-backed *Metrics on an ephemeral port, so the
+// live-recorder benchmarks measure the actual counter/histogram cost rather
+// than the Nop{} no-op. The /metrics server binds 127.0.0.1:0 and is left to
+// the process to reclaim on exit.
+func liveMetrics(tb testing.TB) *Metrics {
+	tb.Helper()
+	r, err := Setup(Config{Addr: "127.0.0.1:0", Bus: "bench", Mode: "core", Role: "sub"})
+	if err != nil {
+		tb.Fatalf("Setup: %v", err)
+	}
+	m, ok := r.(*Metrics)
+	if !ok {
+		tb.Fatalf("Setup returned %T, expected *Metrics", r)
+	}
+	return m
+}
+
+// recorders pairs the live and disabled recorders so each benchmark reports
+// both the enabled cost and the no-op baseline.
+func recorders(b *testing.B) []struct {
+	name string
+	rec  Recorder
+} {
+	return []struct {
+		name string
+		rec  Recorder
+	}{
+		{"live", liveMetrics(b)},
+		{"nop", Nop{}},
+	}
+}
+
+func BenchmarkParseSeq(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, ok := ParseSeq("orders 123456"); !ok {
+			b.Fatal("expected a sequence tail")
+		}
+	}
+}
+
+// BenchmarkGapObserve streams strictly-increasing sequences through the
+// mutex-guarded in-order path (the common case).
+func BenchmarkGapObserve(b *testing.B) {
+	var g GapTracker
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		g.Observe(int64(i))
+	}
+}
+
+// BenchmarkRecordReceived measures the full per-message subscriber wrapper
+// (IncReceived + ParseSeq + GapTracker.Observe) for both recorders.
+func BenchmarkRecordReceived(b *testing.B) {
+	for _, r := range recorders(b) {
+		b.Run(r.name, func(b *testing.B) {
+			var g GapTracker
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				RecordReceived(r.rec, &g, "orders 123")
+			}
+		})
+	}
+}
+
+// BenchmarkIncPublished measures the publisher's per-message counter Add
+// against the stored attribute set, for both recorders.
+func BenchmarkIncPublished(b *testing.B) {
+	for _, r := range recorders(b) {
+		b.Run(r.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				r.rec.IncPublished()
+			}
+		})
+	}
+}

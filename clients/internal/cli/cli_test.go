@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -286,6 +290,113 @@ func TestPubLoop(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEmit checks the two render paths of Emit against an injected buffer. The
+// leading timestamp is non-deterministic, so text rows assert the exact tail
+// after it (and that the prefix parses as a timestamp), and JSON rows assert
+// the decoded object.
+func TestEmit(t *testing.T) {
+	tests := []struct {
+		description string
+		json        bool
+		subject     string
+		data        string
+		expectTail  string // text mode: exact output after the timestamp
+	}{
+		// positive
+		{"text mode renders a timestamped subject/data line", false, "orders", "hello 1", "  [orders] hello 1\n"},
+		{"json mode renders one compact object", true, "orders", "hello 1", ""},
+		// boundary
+		{"text mode tolerates empty data", false, "demo", "", "  [demo] \n"},
+		// corner
+		{"json mode escapes control characters and quotes in data", true, "s", "a\tb\"c", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			var buf bytes.Buffer
+			f := &Flags{JSON: tc.json, out: &buf}
+			f.Emit(tc.subject, tc.data)
+			out := buf.String()
+
+			if !tc.json {
+				if !strings.HasSuffix(out, tc.expectTail) {
+					t.Fatalf("Emit text = %q, expected tail %q", out, tc.expectTail)
+				}
+				ts := strings.TrimSuffix(out, tc.expectTail)
+				if _, err := time.Parse(time.RFC3339, ts); err != nil {
+					t.Fatalf("Emit text prefix %q is not an RFC3339 timestamp: %v", ts, err)
+				}
+				return
+			}
+
+			line := strings.TrimRight(out, "\n")
+			if strings.Contains(line, "\n") {
+				t.Fatalf("Emit json emitted more than one line: %q", out)
+			}
+			var got struct {
+				TS      string `json:"ts"`
+				Subject string `json:"subject"`
+				Data    string `json:"data"`
+			}
+			if err := json.Unmarshal([]byte(line), &got); err != nil {
+				t.Fatalf("Emit json = %q, not valid JSON: %v", out, err)
+			}
+			if got.Subject != tc.subject || got.Data != tc.data {
+				t.Fatalf("Emit json decoded {subject:%q data:%q}, expected {subject:%q data:%q}",
+					got.Subject, got.Data, tc.subject, tc.data)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, got.TS); err != nil {
+				t.Fatalf("Emit json ts %q is not RFC3339Nano: %v", got.TS, err)
+			}
+		})
+	}
+}
+
+// --- micro-benchmarks (execute under `go test -bench`; compile-checked by
+// `go test ./...`). They exercise the per-message hot paths every client runs,
+// with output routed to io.Discard so only the CPU/alloc cost is measured. ---
+
+// BenchmarkPubLoop measures the multi-message path, whose per-message
+// fmt.Sprintf sequence suffix (cli.go) is the allocation of interest.
+func BenchmarkPubLoop(b *testing.B) {
+	f := &Flags{Msg: "hello", Count: 1000, Subject: "s", Addr: "a", out: io.Discard}
+	send := func(string) error { return nil }
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if err := f.PubLoop(send); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkPubLoopSingle is the Count==1 baseline: the no-Sprintf path, for
+// contrast with the sequence-numbered loop above.
+func BenchmarkPubLoopSingle(b *testing.B) {
+	f := &Flags{Msg: "hello", Count: 1, Subject: "s", Addr: "a", out: io.Discard}
+	send := func(string) error { return nil }
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if err := f.PubLoop(send); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEmitText(b *testing.B) {
+	f := &Flags{out: io.Discard}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		f.Emit("orders", "hello 1")
+	}
+}
+
+func BenchmarkEmitJSON(b *testing.B) {
+	f := &Flags{JSON: true, out: io.Discard}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		f.Emit("orders", "hello 1")
 	}
 }
 

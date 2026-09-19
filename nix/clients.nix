@@ -100,7 +100,44 @@ let
     };
   }) exampleDefs);
 
-  apps = busApps // exampleApps;
+  # `nix run .#clients-bench` — run the hermetic Go micro-benchmarks on the
+  # host, printing fresh ns/op + allocs/op each invocation. It copies the
+  # module source plus the same vendored deps `clients` uses into a temp dir
+  # and runs `go test -bench` there, so it needs no network. (A build
+  # derivation would cache the numbers, which is wrong for a benchmark, hence
+  # a host-run script rather than a check.) Extra args pass through, e.g.
+  # `nix run .#clients-bench -- -benchtime 2s -bench BenchmarkPubLoop`.
+  benchApp = pkgs.writeShellApplication {
+    name = "clients-bench";
+    runtimeInputs = with pkgs; [ go coreutils ];
+    text = ''
+      set -euo pipefail
+      work="$(mktemp -d)"
+      trap 'chmod -R u+w "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
+      # cp -a preserves the store's read-only modes (and copies src dir attrs
+      # onto the dest), so make the tree writable after each copy before the
+      # next step needs to create files under it.
+      cp -a ${../clients}/. "$work/"
+      chmod -R u+w "$work"
+      mkdir -p "$work/vendor"
+      cp -a ${clients.goModules}/. "$work/vendor/"
+      chmod -R u+w "$work"
+      cd "$work"
+      export HOME="$work" GOFLAGS=-mod=vendor GOCACHE="$work/.gocache" GOTOOLCHAIN=local
+      echo "running client micro-benchmarks (go test -bench=. -benchmem)…" >&2
+      exec go test -bench=. -benchmem -run '^$' "$@" ./...
+    '';
+  };
+
+  benchApps = {
+    clients-bench = {
+      type = "app";
+      program = "${benchApp}/bin/clients-bench";
+      meta.description = "Run the hermetic Go micro-benchmarks for the message-bus clients";
+    };
+  };
+
+  apps = busApps // exampleApps // benchApps;
 in
 {
   package = clients;

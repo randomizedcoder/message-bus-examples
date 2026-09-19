@@ -42,6 +42,19 @@ type Flags struct {
 	MetricsAddr string
 
 	interval time.Duration // per-message pub delay, derived from -rate
+
+	// out is where PubLoop's summary and Emit's per-message lines are written.
+	// nil means os.Stdout (the production default); tests and benchmarks inject
+	// a bytes.Buffer / io.Discard so output can be asserted or silenced.
+	out io.Writer
+}
+
+// w returns the output sink, defaulting to os.Stdout when none is injected.
+func (f *Flags) w() io.Writer {
+	if f.out != nil {
+		return f.out
+	}
+	return os.Stdout
 }
 
 // Parse reads os.Args as `<bin> <pub|sub> [flags]` and returns the resolved
@@ -136,24 +149,31 @@ func (f *Flags) PubLoop(send func(body string) error) error {
 	if n <= 0 {
 		n = 1
 	}
+	// Reused scratch buffer for the "<msg> <seq>" body, so the per-message
+	// sequence suffix costs one string copy instead of an fmt.Sprintf (which
+	// also boxes the int into an interface{} and allocates fmt scratch).
+	var buf []byte
 	for i := 0; i < n; i++ {
 		if i > 0 && f.interval > 0 {
 			time.Sleep(f.interval)
 		}
 		body := f.Msg
 		if n > 1 {
-			body = fmt.Sprintf("%s %d", f.Msg, i+1)
+			buf = append(buf[:0], f.Msg...)
+			buf = append(buf, ' ')
+			buf = strconv.AppendInt(buf, int64(i+1), 10)
+			body = string(buf)
 		}
 		if err := send(body); err != nil {
 			return fmt.Errorf("publish %d/%d: %w", i+1, n, err)
 		}
 	}
-	fmt.Printf("published %d message(s) to %q on %s\n", n, f.Subject, f.Addr)
+	fmt.Fprintf(f.w(), "published %d message(s) to %q on %s\n", n, f.Subject, f.Addr)
 	return nil
 }
 
-// Emit renders one received message, either as a human line or, with
-// -json, as a compact JSON object.
+// Emit renders one received message to the configured writer (stdout by
+// default), either as a human line or, with -json, as a compact JSON object.
 func (f *Flags) Emit(subject, data string) {
 	if f.JSON {
 		b, _ := json.Marshal(struct {
@@ -161,9 +181,9 @@ func (f *Flags) Emit(subject, data string) {
 			Subject string `json:"subject"`
 			Data    string `json:"data"`
 		}{time.Now().Format(time.RFC3339Nano), subject, data})
-		fmt.Println(string(b))
+		fmt.Fprintln(f.w(), string(b))
 	} else {
-		fmt.Printf("%s  [%s] %s\n", time.Now().Format(time.RFC3339), subject, data)
+		fmt.Fprintf(f.w(), "%s  [%s] %s\n", time.Now().Format(time.RFC3339), subject, data)
 	}
 }
 

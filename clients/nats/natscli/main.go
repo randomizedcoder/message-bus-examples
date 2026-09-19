@@ -66,14 +66,17 @@ func runCore(f *cli.Flags, nc *nats.Conn, rec metrics.Recorder) {
 				rec.IncPublishError()
 				return err
 			}
-			if err := nc.Flush(); err != nil {
-				rec.IncPublishError()
-				return err
-			}
 			rec.IncPublished()
 			return nil
 		}); err != nil {
 			log.Fatalf("%v", err)
+		}
+		// Flush once after the loop rather than per message. Core NATS is
+		// fire-and-forget; a Flush() per Publish forces a server round-trip
+		// every message and caps throughput at the connection RTT. One flush
+		// at the end guarantees the batch reached the server before Drain.
+		if err := nc.Flush(); err != nil {
+			log.Fatalf("flush: %v", err)
 		}
 	case "sub":
 		lim := f.NewLimiter()
