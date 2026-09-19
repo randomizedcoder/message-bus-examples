@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['localhost:9090']
+      - job_name: node
+        static_configs:
+          - targets: ['10.33.33.10:9100', '10.33.33.11:9100', '10.33.33.12:9100', '10.33.33.13:9100']
+      - job_name: nats
+        static_configs:
+          - targets: ['nats-exporter:7777']
+      - job_name: rabbitmq
+        static_configs:
+          - targets: ['rabbitmq-0.rabbitmq-headless.rabbitmq.svc.cluster.local:15692', 'rabbitmq-1.rabbitmq-headless.rabbitmq.svc.cluster.local:15692', 'rabbitmq-2.rabbitmq-headless.rabbitmq.svc.cluster.local:15692']
+      - job_name: cilium-agent
+        static_configs:
+          - targets: ['10.33.33.10:9962', '10.33.33.11:9962', '10.33.33.12:9962', '10.33.33.13:9962']
+      - job_name: cilium-operator
+        static_configs:
+          - targets: ['10.33.33.10:9963', '10.33.33.11:9963', '10.33.33.12:9963', '10.33.33.13:9963']
+      - job_name: hubble
+        static_configs:
+          - targets: ['10.33.33.10:9965', '10.33.33.11:9965', '10.33.33.12:9965', '10.33.33.13:9965']
+      - job_name: grafana
+        static_configs:
+          - targets: ['grafana:3000']
+      - job_name: soak-clients
+        static_configs:
+          - targets: ['10.33.33.1:9200', '10.33.33.1:9201', '10.33.33.1:9202', '10.33.33.1:9203', '10.33.33.1:9204', '10.33.33.1:9205', '10.33.33.1:9206', '10.33.33.1:9207', '10.33.33.1:9208', '10.33.33.1:9209', '10.33.33.1:9210', '10.33.33.1:9211']
+

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-exporter
+  namespace: monitoring
+  labels:
+    app: nats-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats-exporter
+  template:
+    metadata:
+      labels:
+        app: nats-exporter
+    spec:
+      containers:
+      - name: nats-exporter
+        image: messagebus.local/prometheus-nats-exporter:0.15.0
+        imagePullPolicy: Never
+        command: ["/bin/prometheus-nats-exporter"]
+        args:
+        - "-varz"
+        - "-jsz=all"
+        - "-connz"
+        - "-leafz"
+        - "-routez"
+        - "-port"
+        - "7777"
+        - "http://nats-0.nats-headless.nats.svc.cluster.local:8222"
+        - "http://nats-1.nats-headless.nats.svc.cluster.local:8222"
+        - "http://nats-2.nats-headless.nats.svc.cluster.local:8222"
+        - "http://nats-leaf-0.nats-leaf-headless.nats.svc.cluster.local:8222"
+        ports:
+        - containerPort: 7777
+          name: metrics
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 7777
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: 25m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-exporter
+  namespace: monitoring
+  labels:
+    app: nats-exporter
+spec:
+  selector:
+    app: nats-exporter
+  ports:
+  - name: metrics
+    port: 7777
+    targetPort: 7777
+

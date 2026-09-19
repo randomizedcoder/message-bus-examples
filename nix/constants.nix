@@ -202,6 +202,7 @@ rec {
       mgmtPort      = 15672;
       distPort      = 25672;  # inter-node Erlang distribution
       epmdPort      = 4369;
+      prometheusPort = 15692; # rabbitmq_prometheus plugin /metrics
       nodePortAmqp  = 30567;  # AMQP 5672 → host :30567
       nodePortMgmt  = 30672;  # mgmt UI 15672 → host :30672
     };
@@ -237,6 +238,47 @@ rec {
     };
   };
 
+  # ─── Observability stack (in-cluster Prometheus + Grafana) ─────────
+  # A monitoring namespace runs Prometheus (scrapes node_exporter on every
+  # VM, the NATS exporter, RabbitMQ, Cilium, and the host-side soak clients)
+  # and Grafana (provisioned datasource + soak dashboard). Both pods are
+  # pinned to cp0 — the node the fault rotation never kills — so monitoring
+  # survives the soak's rolling failures. Images are Nix-built and preloaded
+  # like the buses (nix/images/default.nix); tags track the nixpkgs versions.
+  monitoring = {
+    namespace = "monitoring";
+    # Host bridge IP (k8sbr0). The soak clients run on the host and expose
+    # OTel /metrics here; an in-cluster Prometheus scrapes them over the bridge
+    # (firewall is disabled on the VMs).
+    hostBridgeIP = network.gateway4;   # 10.33.33.1
+
+    prometheus = {
+      image     = "messagebus.local/prometheus";
+      tag       = "3.14.0";
+      port      = 9090;
+      nodePort  = 30900;   # Prometheus UI 9090 → host :30900
+      retention = "7d";
+      storage   = "5Gi";
+    };
+    natsExporter = {
+      image = "messagebus.local/prometheus-nats-exporter";
+      tag   = "0.15.0";
+      port  = 7777;        # /metrics scraped by Prometheus
+    };
+    grafana = {
+      image    = "messagebus.local/grafana";
+      tag      = "13.1.4";
+      port     = 3000;
+      nodePort = 30300;    # Grafana UI 3000 → host :30300
+    };
+
+    # Host-side per-client OTel metrics ports assigned by the soak harness:
+    # client i binds hostBridgeIP:(clientMetricsBasePort + i). Prometheus lists
+    # this whole contiguous range as static targets (down ones are simply DOWN).
+    clientMetricsBasePort = 9200;
+    clientMetricsCount    = 12;
+  };
+
   # ─── Chaos / failover test defaults ────────────────────────────────
   chaos = {
     defaultRounds         = 10;
@@ -244,6 +286,21 @@ rec {
     defaultPostRoundWait  = 60;
     defaultWarmupSec      = 15;
     defaultLogDir         = "./chaos-logs";
+  };
+
+  # ─── Soak test defaults ────────────────────────────────────────────
+  # A sustained multi-hour run: all clients (HA variants) publish/subscribe
+  # under load while one MicroVM at a time is killed on a rotation, and the
+  # NATS concept demos are re-run on an interval. Clients export OTel metrics
+  # (scraped by the in-cluster Prometheus); the harness writes an end-of-run
+  # report from those series. See nix/soak-scripts.nix.
+  soak = {
+    defaultDuration        = "4h";      # total wall-clock run length
+    defaultFaultIntervalSec = 900;      # kill+restart one node every 15 min
+    defaultRate            = "20/s";    # per-publisher publish rate
+    defaultDemoIntervalSec = 300;       # re-run the NATS concept demos every 5 min
+    defaultLogDir          = "./soak-logs";
+    nodes                  = "cp1,cp2,w3";  # kill rotation (cp0 spared)
   };
 
   # ─── ArgoCD service (NodePort reachable from host) ─────────────────

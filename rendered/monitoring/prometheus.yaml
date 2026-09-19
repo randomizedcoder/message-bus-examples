@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  type: NodePort
+  selector:
+    app: prometheus
+  ports:
+  - name: web
+    port: 9090
+    targetPort: 9090
+    nodePort: 30900
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      # Pin to cp0 — the node the soak never kills — so the TSDB
+      # (and its local-path PV) stay put across rolling failures.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [ k8s-cp0 ]
+      securityContext:
+        fsGroup: 0
+      containers:
+      - name: prometheus
+        image: messagebus.local/prometheus:3.14.0
+        imagePullPolicy: Never
+        command: ["/bin/prometheus"]
+        args:
+        - "--config.file=/etc/prometheus/prometheus.yml"
+        - "--storage.tsdb.path=/data"
+        - "--storage.tsdb.retention.time=7d"
+        - "--web.listen-address=0.0.0.0:9090"
+        - "--web.enable-lifecycle"
+        ports:
+        - containerPort: 9090
+          name: web
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 20
+          periodSeconds: 30
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: '1'
+            memory: 1Gi
+      volumes:
+      - name: config
+        configMap:
+          name: prometheus-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-path
+      resources:
+        requests:
+          storage: 5Gi
+

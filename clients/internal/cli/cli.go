@@ -37,6 +37,10 @@ type Flags struct {
 	Durable   bool   // RabbitMQ: durable quorum queue (work-queue semantics)
 	Sentinels string // ValKey: comma-separated Sentinel host:port list → FailoverClient
 
+	// MetricsAddr, when non-empty, is the host:port the client serves its OTel
+	// /metrics endpoint on (for the soak test). Empty = metrics disabled.
+	MetricsAddr string
+
 	interval time.Duration // per-message pub delay, derived from -rate
 }
 
@@ -82,6 +86,7 @@ func parseArgs(bin, defAddr, defPass string, args []string) (*Flags, error) {
 	fs.BoolVar(&f.JetStream, "jetstream", false, "NATS only: durable JetStream (create stream + durable consumer)")
 	fs.BoolVar(&f.Durable, "durable", false, "RabbitMQ only: durable quorum queue (work-queue semantics)")
 	fs.StringVar(&f.Sentinels, "sentinels", "", "ValKey only: comma-separated Sentinel host:port list (enables primary discovery)")
+	fs.StringVar(&f.MetricsAddr, "metrics-addr", "", "serve OTel /metrics on this host:port (soak test); empty = disabled")
 	if err := fs.Parse(args[1:]); err != nil {
 		return nil, err
 	}
@@ -117,7 +122,8 @@ func Usage(bin string) {
 	fmt.Fprintf(os.Stderr,
 		"usage: %s <pub|sub> [-addr host:port] [-subject name] [-msg text]\n"+
 			"          [-user u] [-pass p] [-count n] [-rate N/s] [-timeout d] [-json]\n"+
-			"          [-jetstream (nats)] [-durable (rabbitmq)] [-sentinels h:p,... (valkey)]\n", bin)
+			"          [-jetstream (nats)] [-durable (rabbitmq)] [-sentinels h:p,... (valkey)]\n"+
+			"          [-metrics-addr host:port]\n", bin)
 	os.Exit(2)
 }
 

@@ -123,6 +123,8 @@ in
             port: ${toString c.distPort}
           - name: management
             port: ${toString c.mgmtPort}
+          - name: prometheus
+            port: ${toString c.prometheusPort}
       '';
     }
 

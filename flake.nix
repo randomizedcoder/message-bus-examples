@@ -151,6 +151,10 @@
             rabbitmq-image  = busImagesMod.images.rabbitmq;
             mosquitto-image = busImagesMod.images.mosquitto;
             valkey-image    = busImagesMod.images.valkey;
+            # Observability stack images (in-cluster Prometheus + Grafana).
+            prometheus-image              = busImagesMod.images.prometheus;
+            prometheus-nats-exporter-image = busImagesMod.images.prometheus-nats-exporter;
+            grafana-image                 = busImagesMod.images.grafana;
           }
           # Go pub/sub CLI clients (all four binaries in one derivation).
           // { message-bus-clients = clients.package; }
@@ -172,6 +176,7 @@
             networkScripts = import (nixDir + "/network-setup.nix") { inherit pkgs; };
             vmScripts = import (nixDir + "/microvm-scripts.nix") { inherit pkgs; };
             chaosScripts = import (nixDir + "/chaos-scripts.nix") { inherit pkgs; };
+            soakScripts = import (nixDir + "/soak-scripts.nix") { inherit pkgs; };
             rawApps =
           {
             # Network management
@@ -248,6 +253,14 @@
             k8s-chaos-failover = {
               type = "app";
               program = "${chaosScripts.chaosFailover}/bin/k8s-chaos-failover";
+            };
+          }
+
+          # Sustained multi-hour soak test (all buses + rolling failover).
+          // {
+            k8s-soak-test = {
+              type = "app";
+              program = "${soakScripts.soakTest}/bin/k8s-soak-test";
             };
           }
 
