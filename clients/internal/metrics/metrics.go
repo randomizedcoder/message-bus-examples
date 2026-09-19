@@ -115,11 +115,11 @@ func Setup(cfg Config) (Recorder, error) {
 	return m, nil
 }
 
-func (m *Metrics) IncPublished()      { m.published.Add(context.Background(), 1, m.opt) }
-func (m *Metrics) IncPublishError()   { m.publishErrors.Add(context.Background(), 1, m.opt) }
-func (m *Metrics) IncReceived()       { m.received.Add(context.Background(), 1, m.opt) }
-func (m *Metrics) IncReconnect()      { m.reconnects.Add(context.Background(), 1, m.opt) }
-func (m *Metrics) AddGaps(n int64)    { m.gaps.Add(context.Background(), n, m.opt) }
+func (m *Metrics) IncPublished()    { m.published.Add(context.Background(), 1, m.opt) }
+func (m *Metrics) IncPublishError() { m.publishErrors.Add(context.Background(), 1, m.opt) }
+func (m *Metrics) IncReceived()     { m.received.Add(context.Background(), 1, m.opt) }
+func (m *Metrics) IncReconnect()    { m.reconnects.Add(context.Background(), 1, m.opt) }
+func (m *Metrics) AddGaps(n int64)  { m.gaps.Add(context.Background(), n, m.opt) }
 func (m *Metrics) ObserveLatency(d time.Duration) {
 	m.latency.Record(context.Background(), d.Seconds(), m.opt)
 }

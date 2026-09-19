@@ -105,8 +105,15 @@
         busImagesMod = import (nixDir + "/images") { inherit pkgs lib; };
         busImages = busImagesMod.imageList;
 
+        # Toolchain + content-hash single source of truth (design §5).
+        versions = import (nixDir + "/versions.nix") { inherit pkgs; };
+
+        # Proto tooling: buf module cache (FOD), gen-drift/lint/breaking checks,
+        # and the impure regen-protos app.
+        protos = import (nixDir + "/protos") { inherit pkgs versions; };
+
         # Go pub/sub CLI clients, packaged as flake apps.
-        clients = import (nixDir + "/clients.nix") { inherit pkgs; };
+        clients = import (nixDir + "/clients.nix") { inherit pkgs versions; };
 
         # ─── MicroVM Generator ───────────────────────────────────────────
         mkK8sNode = { nodeName, role }:
@@ -159,17 +166,20 @@
           }
           # Go pub/sub CLI clients (all four binaries in one derivation).
           // { message-bus-clients = clients.package; }
+          # Hermetic buf module cache (FOD). `nix build .#buf-deps` to refresh
+          # bufDepsHash in nix/versions.nix.
+          // { buf-deps = protos.bufDeps; }
         );
 
         # ─── Checks (`nix flake check`) ────────────────────────────────
-        # Table-driven unit tests for the shared cli package (rate parsing,
-        # arg handling, Limiter, PubLoop). Runs `go test ./...` in the same
-        # buildGoModule sandbox (vendored deps, no network).
-        checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-          cli-tests = clients.tests;
-        };
+        # cli-tests: table-driven unit tests for the shared cli package.
+        # proto-lint/breaking/gen-drift: buf gates over the workloads.v1 schema
+        # and its checked-in generated code. go-vet/gofmt: the client module.
+        checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+          import (nixDir + "/checks") { inherit pkgs versions clients protos; }
+        );
 
-        devShells.default = import (nixDir + "/shell.nix") { inherit pkgs; };
+        devShells.default = import (nixDir + "/shell.nix") { inherit pkgs versions; };
 
         # ─── Apps (Linux only) ─────────────────────────────────────────
         apps = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
@@ -182,6 +192,13 @@
             imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
           {
+            # Proto codegen (impure; the only place `buf dep update` runs).
+            regen-protos = {
+              type = "app";
+              program = "${protos.regenProtos}/bin/regen-protos";
+              meta.description = "Regenerate the checked-in workloads.v1 Go/gRPC/vtproto code from the .proto sources";
+            };
+
             # Network management
             k8s-check-host = {
               type = "app";

@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package workloads.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "workloads/v1/bench.proto";
+import "workloads/v1/billing.proto";
+import "workloads/v1/common.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1;workloadsv1";
+
+enum ContainerPhase {
+  CONTAINER_PHASE_UNSPECIFIED = 0;
+  CONTAINER_PHASE_PENDING = 1;
+  CONTAINER_PHASE_PULLING = 2;
+  CONTAINER_PHASE_RUNNING = 3;
+  CONTAINER_PHASE_SUCCEEDED = 4;
+  CONTAINER_PHASE_FAILED = 5;
+  CONTAINER_PHASE_OOM_KILLED = 6;
+  CONTAINER_PHASE_TERMINATING = 7;
+}
+
+message ContainerState {
+  string name = 1;
+  ContainerPhase phase = 2 [(buf.validate.field).enum.defined_only = true];
+  int32 restart_count = 3 [(buf.validate.field).int32.gte = 0];
+  optional int32 exit_code = 4 [(buf.validate.field).int32 = {
+    gte: -128
+    lte: 255
+  }];
+  google.protobuf.Timestamp started_at = 5;
+  optional bytes image_digest = 6 [(buf.validate.field).bytes.len = 32];
+  // exit_code is present iff the container reached a terminal phase.
+  option (buf.validate.message).cel = {
+    id: "container_state.exit_code_iff_terminal"
+    message: "exit_code is present iff phase is SUCCEEDED, FAILED, or OOM_KILLED"
+    expression: "has(this.exit_code) == (this.phase in [4, 5, 6])"
+  };
+}
+
+message ResourceSample {
+  double cpu_cores = 1 [(buf.validate.field).double = {
+    gte: 0
+    finite: true
+  }];
+  uint64 memory_working_set_bytes = 2;
+  uint64 rx_bytes = 3;
+  uint64 tx_bytes = 4;
+  uint64 fs_used_bytes = 5;
+}
+
+message TelemetrySample {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  WorkloadRef ref = 2 [(buf.validate.field).required = true];
+  ClusterRef cluster = 3;
+  string pod_name = 4 [(buf.validate.field).string.max_len = 253];
+  google.protobuf.Timestamp sampled_at = 5 [(buf.validate.field).required = true];
+  repeated ContainerState containers = 6 [(buf.validate.field).repeated.max_items = 16];
+  ResourceSample resources = 7;
+  map<string, double> custom_gauges = 8 [(buf.validate.field).map = {
+    max_pairs: 32
+    values: {double: {finite: true}}
+  }];
+  option (buf.validate.message).cel = {
+    id: "telemetry_sample.container_names_unique"
+    message: "container names must be unique"
+    expression: "this.containers.map(c, c.name).unique()"
+  };
+}
+
+message TelemetryBatch {
+  repeated TelemetrySample samples = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 1000
+  }];
+}
+
+message TelemetrySummary {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  uint64 samples_accepted = 2;
+  uint64 samples_rejected = 3;
+  google.protobuf.Timestamp first_sample_at = 4;
+  google.protobuf.Timestamp last_sample_at = 5;
+  map<string, uint64> rejected_by_reason = 6 [(buf.validate.field).map.max_pairs = 32];
+  option (buf.validate.message).cel = {
+    id: "telemetry_summary.last_ge_first"
+    message: "last_sample_at must not precede first_sample_at"
+    expression: "!has(this.first_sample_at) || !has(this.last_sample_at) || this.last_sample_at >= this.first_sample_at"
+  };
+}
+
+service TelemetryService {
+  rpc ReportTelemetry(stream TelemetrySample) returns (TelemetrySummary);
+  rpc ReportUsage(stream UsageRecord) returns (UsageAck);
+}

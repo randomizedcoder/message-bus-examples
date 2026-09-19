@@ -1,0 +1,251 @@
+syntax = "proto3";
+
+package workloads.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+import "workloads/v1/bench.proto";
+import "workloads/v1/common.proto";
+import "workloads/v1/telemetry.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1;workloadsv1";
+
+// Closed sets are enums; open sets (regions, cluster ids) are validated strings.
+enum WorkloadKind {
+  WORKLOAD_KIND_UNSPECIFIED = 0;
+  WORKLOAD_KIND_SERVICE = 1; // long-running, replicas >= 1
+  WORKLOAD_KIND_JOB = 2;     // run to completion
+  WORKLOAD_KIND_CRON = 3;    // JOB on a schedule
+}
+
+enum RestartPolicy {
+  RESTART_POLICY_UNSPECIFIED = 0;
+  RESTART_POLICY_ALWAYS = 1;
+  RESTART_POLICY_ON_FAILURE = 2;
+  RESTART_POLICY_NEVER = 3;
+}
+
+enum DeployStatus {
+  DEPLOY_STATUS_UNSPECIFIED = 0;
+  DEPLOY_STATUS_ACCEPTED = 1; // validated + persisted by the global API
+  DEPLOY_STATUS_ROUTED = 2;   // handed to a regional agent
+  DEPLOY_STATUS_APPLIED = 3;  // agent applied it to its cluster
+  DEPLOY_STATUS_REJECTED = 4;
+}
+
+enum WorkloadPhase {
+  WORKLOAD_PHASE_UNSPECIFIED = 0;
+  WORKLOAD_PHASE_PENDING = 1;
+  WORKLOAD_PHASE_PROGRESSING = 2;
+  WORKLOAD_PHASE_AVAILABLE = 3;
+  WORKLOAD_PHASE_DEGRADED = 4;
+  WORKLOAD_PHASE_COMPLETED = 5;
+  WORKLOAD_PHASE_FAILED = 6;
+  WORKLOAD_PHASE_DELETED = 7;
+}
+
+// oneof: image pinned by a mutable tag or by an immutable raw sha256 digest.
+message ImageSource {
+  string repository = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+    pattern: "^[a-z0-9][a-z0-9._/-]*$"
+  }];
+  oneof ref {
+    option (buf.validate.oneof).required = true;
+    string tag = 2 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9_][A-Za-z0-9._-]*$"
+    }];
+    bytes digest = 3 [(buf.validate.field).bytes.len = 32];
+  }
+}
+
+message ContainerSpec {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 63
+    pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+  }];
+  ImageSource image = 2 [(buf.validate.field).required = true];
+  repeated string command = 3 [(buf.validate.field).repeated.max_items = 32];
+  repeated string args = 4 [(buf.validate.field).repeated.max_items = 64];
+  repeated EnvVar env = 5 [(buf.validate.field).repeated.max_items = 128];
+  repeated Port ports = 6 [(buf.validate.field).repeated.max_items = 16];
+  Resources resources = 7 [(buf.validate.field).required = true];
+  optional string working_dir = 8 [(buf.validate.field).string = {
+    max_len: 4096
+    prefix: "/"
+  }];
+  option (buf.validate.message).cel = {
+    id: "container_spec.port_names_unique"
+    message: "port names must be unique"
+    expression: "this.ports.map(p, p.name).unique()"
+  };
+}
+
+message RegionAffinity {
+  repeated string preferred = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 8
+    unique: true
+    items: {string: {pattern: "^[a-z]{2}-[a-z]+-[0-9]$"}}
+  }];
+  repeated string excluded = 2 [(buf.validate.field).repeated = {
+    max_items: 8
+    unique: true
+    items: {string: {pattern: "^[a-z]{2}-[a-z]+-[0-9]$"}}
+  }];
+  bool strict = 3; // true: fail rather than fall back outside `preferred`
+  option (buf.validate.message).cel = {
+    id: "region_affinity.disjoint"
+    message: "preferred and excluded must not overlap"
+    expression: "!this.preferred.exists(r, r in this.excluded)"
+  };
+}
+
+message LatencyTarget {
+  string from_region = 1 [(buf.validate.field).string.pattern = "^[a-z]{2}-[a-z]+-[0-9]$"];
+  google.protobuf.Duration max_rtt = 2 [(buf.validate.field).duration = {
+    gt: {seconds: 0}
+    lte: {seconds: 5}
+  }];
+}
+
+// oneof placement policy: exactly one of three shapes.
+message Placement {
+  oneof policy {
+    option (buf.validate.oneof).required = true;
+    ClusterRef cluster = 1;
+    RegionAffinity region_affinity = 2;
+    LatencyTarget latency_target = 3;
+  }
+}
+
+message WorkloadSpec {
+  WorkloadKind kind = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  repeated ContainerSpec containers = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 16
+  }];
+  uint32 replicas = 3 [(buf.validate.field).uint32.lte = 1000];
+  RestartPolicy restart_policy = 4 [(buf.validate.field).enum.defined_only = true];
+  Placement placement = 5 [(buf.validate.field).required = true];
+  map<string, string> labels = 6 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {min_len: 1, max_len: 63}}
+    values: {string: {max_len: 63}}
+  }];
+  map<string, string> annotations = 7 [(buf.validate.field).map = {
+    max_pairs: 64
+    values: {string: {max_len: 4096}}
+  }];
+  optional google.protobuf.Duration ttl_after_finished = 8
+      [(buf.validate.field).duration.lte = {seconds: 604800}];
+  optional string schedule = 9 [(buf.validate.field).string.max_len = 128]; // cron expression
+  option (buf.validate.message).cel = {
+    id: "workload_spec.container_names_unique"
+    message: "container names must be unique"
+    expression: "this.containers.map(c, c.name).unique()"
+  };
+  option (buf.validate.message).cel = {
+    id: "workload_spec.schedule_iff_cron"
+    message: "schedule is required for CRON and forbidden otherwise"
+    expression: "(this.kind == 3) == has(this.schedule)"
+  };
+  option (buf.validate.message).cel = {
+    id: "workload_spec.service_replicas"
+    message: "SERVICE workloads need replicas >= 1"
+    expression: "this.kind != 1 || this.replicas >= 1"
+  };
+}
+
+// FieldMask earns its place: "scale to N replicas" is the most common update
+// and must not resend / replace the whole spec. It also exercises the WKT's
+// special ProtoJSON form ("replicas,labels").
+message UpdateWorkload {
+  WorkloadSpec spec = 1 [(buf.validate.field).required = true];
+  google.protobuf.FieldMask update_mask = 2; // empty = full replace
+  option (buf.validate.message).cel = {
+    id: "update_workload.mask_paths"
+    message: "update_mask paths must be top-level WorkloadSpec fields"
+    expression: "!has(this.update_mask) || this.update_mask.paths.all(p, p in ['kind', 'containers', 'replicas', 'restart_policy', 'placement', 'labels', 'annotations', 'ttl_after_finished', 'schedule'])"
+  };
+}
+
+message DeleteWorkload {
+  bool force = 1;
+  optional google.protobuf.Duration grace_period = 2 [(buf.validate.field).duration = {
+    gte: {seconds: 0}
+    lte: {seconds: 3600}
+  }];
+}
+
+message DeployRequest {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  WorkloadRef ref = 2 [(buf.validate.field).required = true];
+  oneof op {
+    option (buf.validate.oneof).required = true;
+    WorkloadSpec create = 3;
+    UpdateWorkload update = 4;
+    DeleteWorkload delete = 5;
+  }
+  string idempotency_key = 6 [(buf.validate.field).string.uuid = true];
+  google.protobuf.Timestamp requested_at = 7 [(buf.validate.field).required = true];
+}
+
+message DeployResponse {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  WorkloadRef ref = 2;
+  DeployStatus status = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  ClusterRef assigned_cluster = 4; // set once ROUTED / APPLIED
+  uint64 generation = 5;
+  repeated Problem problems = 6 [(buf.validate.field).repeated.max_items = 32];
+  option (buf.validate.message).cel = {
+    id: "deploy_response.cluster_when_routed"
+    message: "assigned_cluster is required when status is ROUTED or APPLIED"
+    expression: "!(this.status in [2, 3]) || has(this.assigned_cluster)"
+  };
+  option (buf.validate.message).cel = {
+    id: "deploy_response.problems_when_rejected"
+    message: "REJECTED responses must carry at least one problem"
+    expression: "this.status != 4 || this.problems.size() > 0"
+  };
+}
+
+message WatchWorkloadRequest {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  WorkloadRef ref = 2 [(buf.validate.field).required = true];
+  optional uint64 since_generation = 3;
+  // Bench knob: bound the server stream (unset = until cancelled).
+  optional uint32 max_events = 4 [(buf.validate.field).uint32 = {
+    gte: 1
+    lte: 10000000
+  }];
+}
+
+message WorkloadEvent {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  WorkloadRef ref = 2;
+  ClusterRef cluster = 3;
+  uint64 generation = 4;
+  WorkloadPhase phase = 5 [(buf.validate.field).enum.defined_only = true];
+  google.protobuf.Timestamp observed_at = 6;
+  repeated ContainerState containers = 7 [(buf.validate.field).repeated.max_items = 16];
+  optional string reason = 8 [(buf.validate.field).string.max_len = 1024];
+}
+
+service WorkloadService {
+  rpc Deploy(DeployRequest) returns (DeployResponse);
+  rpc DeployStream(stream DeployRequest) returns (stream DeployResponse);
+  rpc WatchWorkload(WatchWorkloadRequest) returns (stream WorkloadEvent);
+}

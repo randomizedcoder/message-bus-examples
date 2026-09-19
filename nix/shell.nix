@@ -2,7 +2,7 @@
 #
 # Development shell for K8s cluster.
 #
-{ pkgs }:
+{ pkgs, versions }:
 pkgs.mkShell {
   packages = with pkgs; [
     kubectl
@@ -27,6 +27,14 @@ pkgs.mkShell {
     natscli
     mosquitto    # mosquitto_pub / mosquitto_sub
     valkey       # valkey-cli
+  ] ++ [
+    # Protobuf / gRPC toolchain (pinned in nix/versions.nix, design §5).
+    versions.buf
+    versions.protoc
+    versions.protoc-gen-go
+    versions.protoc-gen-go-grpc
+    versions.protoc-gen-go-vtproto
+    versions.grpcurl
   ];
   shellHook = ''
     echo "message-bus-examples — Development Shell (3 CP + 1 Worker)"
@@ -43,5 +51,9 @@ pkgs.mkShell {
     echo "  nix run .#mqtt-sub   ;  nix run .#mqtt-pub -- -msg hello"
     echo "  nix run .#valkey-sub -- -pass \$VALKEY_PASS"
     echo "  nix run .#rabbitmq-sub -- -pass \$RABBITMQ_PASS"
+    echo ""
+    echo "Protobuf / gRPC benchmark (design docs/protobuf-grpc-benchmark-design.md):"
+    echo "  nix run .#regen-protos                # Regenerate clients/gen from .proto"
+    echo "  nix flake check                       # proto-lint, proto-breaking, proto-gen-drift, go-vet, gofmt"
   '';
 }

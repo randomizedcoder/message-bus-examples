@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package workloads.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+import "workloads/v1/bench.proto";
+import "workloads/v1/common.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1;workloadsv1";
+
+enum Meter {
+  METER_UNSPECIFIED = 0;
+  METER_CPU_CORE_SECONDS = 1;
+  METER_MEMORY_GIB_SECONDS = 2;
+  METER_EGRESS_BYTES = 3;
+  METER_STORAGE_GIB_HOURS = 4;
+  METER_REQUESTS = 5;
+}
+
+message MeterReading {
+  Meter meter = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  oneof value {
+    option (buf.validate.oneof).required = true;
+    uint64 count = 2;
+    double quantity = 3 [(buf.validate.field).double = {
+      gte: 0
+      finite: true
+    }];
+  }
+  string unit = 4;
+}
+
+message UsageRecord {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  WorkloadRef ref = 2 [(buf.validate.field).required = true];
+  ClusterRef cluster = 3;
+  // record_id is the idempotency key for billing dedup.
+  string record_id = 4 [(buf.validate.field).string.uuid = true];
+  google.protobuf.Timestamp window_start = 5 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp window_end = 6 [(buf.validate.field).required = true];
+  repeated MeterReading readings = 7 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 16
+  }];
+  optional string sku = 8 [(buf.validate.field).string.max_len = 128];
+  option (buf.validate.message).cel = {
+    id: "usage_record.window_ordered"
+    message: "window_end must be after window_start"
+    expression: "this.window_end > this.window_start"
+  };
+  option (buf.validate.message).cel = {
+    id: "usage_record.window_max_1h"
+    message: "billing window must not exceed 1 hour"
+    expression: "this.window_end - this.window_start <= duration('1h')"
+  };
+  option (buf.validate.message).cel = {
+    id: "usage_record.meters_unique"
+    message: "each meter may appear at most once"
+    expression: "this.readings.map(r, r.meter).unique()"
+  };
+}
+
+message UsageBatch {
+  repeated UsageRecord records = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 500
+  }];
+}
+
+message UsageAck {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  uint64 records_accepted = 2;
+  uint64 records_duplicate = 3;
+  uint64 records_rejected = 4;
+  bytes batch_sha256 = 5 [(buf.validate.field).bytes.len = 32];
+}

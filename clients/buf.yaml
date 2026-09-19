@@ -1,0 +1,19 @@
+version: v2
+modules:
+  - path: proto
+deps:
+  - buf.build/bufbuild/protovalidate
+lint:
+  use:
+    - STANDARD
+  # Deliberate: Deploy (unary) and DeployStream (bidi) share DeployRequest /
+  # DeployResponse so the same bytes go over both, and WatchWorkload streams
+  # WorkloadEvent, which is also a bus payload. STANDARD would otherwise
+  # demand DeployStreamRequest / WatchWorkloadResponse wrapper types.
+  except:
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

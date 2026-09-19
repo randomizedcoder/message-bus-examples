@@ -17,13 +17,18 @@
 # thin wrappers that prepend it so `nix run .#<bus>-<pub|sub> -- <flags>`
 # works directly.
 #
-{ pkgs }:
+# `versions` defaults so the several script modules that import this file with
+# just `{ pkgs }` (bench/chaos/soak-scripts) keep working; flake.nix passes the
+# shared instance explicitly.
+{ pkgs, versions ? import ./versions.nix { inherit pkgs; } }:
 let
   clients = pkgs.buildGoModule {
     pname = "message-bus-clients";
     version = "0.1.0";
     src = ../clients;
-    vendorHash = "sha256-DcyJuJ+yhPgM+e2IohCQAF2lm4Wv9q7q38w7jX4re/Y=";
+    # Single source of truth in nix/versions.nix (design §5). Bump there after
+    # editing clients/go.mod: `nix build .#message-bus-clients 2>&1 | grep got:`.
+    vendorHash = versions.goVendorHash;
     subPackages = [
       "nats/natscli"
       "rabbitmq/rabbitmqcli"
