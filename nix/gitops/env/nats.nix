@@ -15,6 +15,7 @@
 let
   constants = import ../../constants.nix;
   c = constants.messageBus.nats;
+  mon = constants.monitoring;
   ns = c.namespace;
   domain = "svc.${constants.k8s.clusterDomain}";
 
@@ -199,6 +200,39 @@ in
                   limits:
                     cpu: 500m
                     memory: 512Mi
+              # prometheus-nats-exporter sidecar — scrapes THIS pod's nats-server
+              # over localhost and exposes Prometheus metrics on the exporter
+              # port, scraped per-pod over the headless Service. One exporter per
+              # server (co-located) mirrors the redis_exporter/Valkey sidecar and
+              # follows the exporter's own guidance: a single aggregating exporter
+              # returns HTTP 500 for the whole scrape when any one monitored
+              # server is briefly unreachable, so under rolling node faults it
+              # gapped every NATS/JetStream panel. Per pod, a node fault gaps only
+              # that one server's target. No readinessProbe: the exporter must
+              # never gate the nats-server's own client readiness.
+              - name: nats-exporter
+                image: ${mon.natsExporter.image}:${mon.natsExporter.tag}
+                imagePullPolicy: Never
+                command: ["/bin/prometheus-nats-exporter"]
+                args:
+                - "-varz"
+                - "-jsz=all"
+                - "-connz"
+                - "-leafz"
+                - "-routez"
+                - "-port"
+                - "${toString mon.natsExporter.port}"
+                - "http://localhost:${toString c.monitorPort}"
+                ports:
+                - containerPort: ${toString mon.natsExporter.port}
+                  name: metrics
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 32Mi
+                  limits:
+                    cpu: 200m
+                    memory: 128Mi
               volumes:
               - name: config
                 configMap:
@@ -344,6 +378,32 @@ in
                   limits:
                     cpu: 500m
                     memory: 512Mi
+              # prometheus-nats-exporter sidecar — see the hub StatefulSet above.
+              # One exporter per server, co-located, scraped per-pod so a worker
+              # fault gaps only the leaf's target, not the hub/JetStream metrics.
+              - name: nats-exporter
+                image: ${mon.natsExporter.image}:${mon.natsExporter.tag}
+                imagePullPolicy: Never
+                command: ["/bin/prometheus-nats-exporter"]
+                args:
+                - "-varz"
+                - "-jsz=all"
+                - "-connz"
+                - "-leafz"
+                - "-routez"
+                - "-port"
+                - "${toString mon.natsExporter.port}"
+                - "http://localhost:${toString c.monitorPort}"
+                ports:
+                - containerPort: ${toString mon.natsExporter.port}
+                  name: metrics
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 32Mi
+                  limits:
+                    cpu: 200m
+                    memory: 128Mi
               volumes:
               - name: config
                 configMap:
