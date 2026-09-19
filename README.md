@@ -471,9 +471,13 @@ The micro-benchmarks are compile-checked by `nix flake check` (not executed —
 timing is machine-dependent). The live harness publishes N messages unthrottled
 per bus, times the run, and reads consume rate + latency from the client OTel
 metrics via Prometheus, writing `bench-logs/bench.md`. See
-[docs/benchmarks.md](docs/benchmarks.md) for the covered paths, the findings, and
-the optimizations applied (per-message `PubLoop`/`ParseSeq` allocation cuts and
-natscli core-publish flush batching).
+[docs/benchmarks.md](docs/benchmarks.md) for the covered paths, a reference run,
+the findings, and the optimizations applied (per-message `PubLoop`/`ParseSeq`
+allocation cuts and natscli core-publish flush batching).
+
+> For a mixed live run prefer `--buses nats,rabbitmq,valkey`: unthrottled QoS-1
+> on the bridged MQTT brokers is the slow path (give MQTT a small `--count`).
+> See the MQTT note in [docs/benchmarks.md](docs/benchmarks.md).
 
 ---
 

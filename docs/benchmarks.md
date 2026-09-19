@@ -50,6 +50,36 @@ row per bus. NATS is benchmarked in **core** (fire-and-forget) mode — the pure
 publish path where the flush change below applies. Needs the cluster up with the
 monitoring stack and SSH to cp0 for credentials.
 
+### Reference run (4-node MicroVM cluster, unthrottled)
+
+Absolute numbers are cluster/hardware-specific — the point is the shape of each
+bus's publish path, not the exact rate.
+
+| bus | mode | count | publish msgs/s | received | p50 / p99 confirm |
+|-----|------|------:|---------------:|---------:|------------------:|
+| nats | core | 200000 | **1,036,269** | — | — |
+| rabbitmq | durable | 200000 | **850** | 200000 | 2500 / 4950 ms |
+| valkey | sentinel | 200000 | **6,130** | 171704 | — |
+| mqtt | core | 5000 | **65** | 154191 | — |
+
+- **NATS** publishes the whole 200k batch in ~0.19s — the single end-of-loop
+  `nc.Flush()` (below) turns per-message round-trips into one. `received` is
+  blank only because the subscriber lived far shorter than a Prometheus scrape
+  interval, so it was never scraped; not a delivery loss.
+- **RabbitMQ**'s synchronous per-message confirm caps throughput and, under an
+  unthrottled backlog, drives confirm latency to seconds — the concrete
+  before-numbers for the deferred confirm-pipelining change (below).
+- **Valkey** pub/sub is fire-and-forget; the subscriber dropped ~14% under
+  unthrottled load (171704/200000).
+
+> **MQTT is benchmarked at a lower `--count`.** Against the 3-broker **bridged**
+> Mosquitto, unthrottled QoS-1 publishing waits a PUBACK per message *and* the
+> bridge fans every message out ~30× (154191 received for 5000 published),
+> saturating the brokers — a full 200k run projects to hours. This is a property
+> of the bridged QoS-1 topology, not a client hot-path. For a mixed run prefer
+> `--buses nats,rabbitmq,valkey` (or give MQTT a small `--count`); the default
+> `--count` is tuned for the other three.
+
 ## Findings & optimizations applied
 
 Ranked from the micro-benchmarks (AMD Ryzen Threadripper PRO 3945WX; absolute
