@@ -171,22 +171,35 @@ in
           ;;
       esac
 
+      # Auth is deterministic and can NEVER spawn an askpass GUI popup:
+      #   1. Try the repo key ONLY (IdentitiesOnly + IdentityAgent=none ignore
+      #      the local ssh-agent, whose unrelated keys otherwise trip the
+      #      servers' MaxAuthTries). BatchMode + publickey-only means a rejected
+      #      key errors out instead of falling back to an interactive prompt.
+      #   2. If the key is not accepted (e.g. the worker nodes only take the
+      #      cluster password), fall back to password auth via sshpass, which
+      #      feeds the password non-interactively — again, no GUI prompt.
       SSH_KEY="./secrets/ssh-ed25519"
-      if [ -f "$SSH_KEY" ]; then
-        exec ssh \
-          -o StrictHostKeyChecking=no \
-          -o UserKnownHostsFile=/dev/null \
-          -o IdentityFile="$SSH_KEY" \
-          -o IdentitiesOnly=yes \
-          -o LogLevel=ERROR \
-          "root@$HOST" "''${PASSTHROUGH_ARGS[@]}"
-      else
-        exec sshpass -p ${constants.ssh.password} ssh \
-          -o StrictHostKeyChecking=no \
-          -o UserKnownHostsFile=/dev/null \
-          -o LogLevel=ERROR \
-          "root@$HOST" "''${PASSTHROUGH_ARGS[@]}"
+      KEY_OPTS=(
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o IdentityFile="$SSH_KEY"
+        -o IdentitiesOnly=yes
+        -o IdentityAgent=none
+        -o PreferredAuthentications=publickey
+        -o BatchMode=yes
+        -o LogLevel=ERROR
+      )
+      if [ -f "$SSH_KEY" ] && ssh "''${KEY_OPTS[@]}" -o ConnectTimeout=5 "root@$HOST" true 2>/dev/null; then
+        exec ssh "''${KEY_OPTS[@]}" "root@$HOST" "''${PASSTHROUGH_ARGS[@]}"
       fi
+      exec sshpass -p ${constants.ssh.password} ssh \
+        -o PreferredAuthentications=password \
+        -o PubkeyAuthentication=no \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR \
+        "root@$HOST" "''${PASSTHROUGH_ARGS[@]}"
     '';
   };
 

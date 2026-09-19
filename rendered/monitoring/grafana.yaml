@@ -44,7 +44,12 @@ spec:
       - name: grafana
         image: messagebus.local/grafana:13.1.4
         imagePullPolicy: Never
-        command: ["/bin/grafana", "server", "--homepath=/share/grafana"]
+        # Run from Grafana's real store path, not the image's /share
+        # symlink: Grafana 13's plugin loader rejects core-plugin files
+        # whose symlink-resolved path escapes the logical plugin dir, so
+        # a symlinked homepath crash-loops on startup. The store path has
+        # the same files as real dirs. (This is what the NixOS module does.)
+        command: ["/nix/store/clwz7i98k8r6ikqmxyp6hpxv72rd7phm-grafana-13.1.4/bin/grafana", "server", "--homepath=/nix/store/clwz7i98k8r6ikqmxyp6hpxv72rd7phm-grafana-13.1.4/share/grafana"]
         env:
         - name: HOME
           value: /var/lib/grafana
@@ -86,8 +91,13 @@ spec:
           mountPath: /etc/grafana/provisioning/datasources
         - name: dashboard-provider
           mountPath: /etc/grafana/provisioning/dashboards
+        # Sibling subdirs under the provider path (which is scanned
+        # recursively); nesting a mount inside the read-only soak
+        # ConfigMap mount would not work.
         - name: dashboards
-          mountPath: /etc/grafana/dashboards
+          mountPath: /etc/grafana/dashboards/soak
+        - name: dashboards-community
+          mountPath: /etc/grafana/dashboards/community
         - name: data
           mountPath: /var/lib/grafana
         - name: logs
@@ -109,6 +119,9 @@ spec:
       - name: dashboards
         configMap:
           name: grafana-dashboards
+      - name: dashboards-community
+        configMap:
+          name: grafana-dashboards-community
       - name: data
         emptyDir: {}
       - name: logs

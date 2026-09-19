@@ -26,7 +26,12 @@ let
   domain = "svc.${constants.k8s.clusterDomain}";
   natsC = constants.messageBus.nats;
   rmqC  = constants.messageBus.rabbitmq;
+  vkC   = constants.messageBus.valkey;
   cp0Host = constants.getHostname "cp0";
+
+  # Provisioned Prometheus datasource uid — referenced by the soak dashboard
+  # and substituted into the community dashboards' ${DS_PROMETHEUS} input.
+  dsUid = "Prometheus";
 
   # Inline YAML array of quoted targets: ['a:1', 'b:2'].
   mkTargets = items: "[" + builtins.concatStringsSep ", " (map (t: "'${t}'") items) + "]";
@@ -51,6 +56,44 @@ let
       (lib.range 0 (natsC.replicas - 1)))
     ++ [ "http://nats-leaf-0.nats-leaf-headless.${natsC.namespace}.${domain}:${toString natsC.monitorPort}" ];
   natsUrlArgs = builtins.concatStringsSep "\n        " (map (u: "- \"${u}\"") natsUrlList);
+
+  # redis_exporter sidecars, one per Valkey pod, scraped over the headless
+  # Service by pod FQDN (:9121).
+  redisTargets = mkTargets (map
+    (i: "valkey-${toString i}.valkey-headless.${vkC.namespace}.${domain}:${toString mon.redisExporter.port}")
+    (lib.range 0 (vkC.replicas - 1)));
+
+  # ─── Community Grafana dashboards (grafana.com) ────────────────────────
+  # Each is fetched at build time with fetchurl, pinned to a specific revision
+  # AND sha256 (a fixed-output derivation — the content hash is verified, so a
+  # changed upstream download fails the build). A build step then rewrites the
+  # dashboard's ${DS_PROMETHEUS} datasource input to our provisioned uid and
+  # strips the import-only __inputs/__requires, and everything is emitted as one
+  # ConfigMap the Grafana file-provider loads. Only dashboards whose exporters
+  # we actually run are included (MQTT/EMQX have no exporter here — omitted).
+  communityDashboardDefs = [
+    { file = "nats-servers";   id = 2279;  rev = 1;  sha256 = "sha256-CDYAwz1f94fE8jle/y05FgqXVUMAefqCSNvG5gr8cNg="; }
+    { file = "nats-jetstream"; id = 14725; rev = 2;  sha256 = "sha256-NPYysyaXAypA+rManlUEwmeB/2zrxGi+tDQQZ19K5rs="; }
+    { file = "rabbitmq";       id = 10991; rev = 15; sha256 = "sha256-+Yoh/lDIXB2kHRqaQp0EqlsTfJAldTlF8bU+j2/B5qI="; }
+    { file = "valkey";         id = 24733; rev = 2;  sha256 = "sha256-revsZl1eDlO0RKt6xjr/ZfRcTv5hKngxigB6W6+pVRw="; }
+    { file = "redis-exporter"; id = 14091; rev = 1;  sha256 = "sha256-OkMixhIT6fkptYrM54HEbt/8BjOqZIltzyWE+TR1RUc="; }
+  ];
+  fetchDash = d: pkgs.fetchurl {
+    url = "https://grafana.com/api/dashboards/${toString d.id}/revisions/${toString d.rev}/download";
+    inherit (d) sha256;
+  };
+  communityDashboardsCM = pkgs.runCommand "grafana-community-dashboards.yaml"
+    { nativeBuildInputs = [ pkgs.jq pkgs.kubectl ]; }
+    ''
+      mkdir dash
+      ${lib.concatMapStringsSep "\n" (d: ''
+        sed 's/[$]{DS_PROMETHEUS}/${dsUid}/g' ${fetchDash d} \
+          | jq 'del(.__inputs, .__requires, .__elements) | .id = null | .uid = "${d.file}"' \
+          > "dash/${d.file}.json"
+      '') communityDashboardDefs}
+      kubectl create configmap grafana-dashboards-community \
+        --namespace=${ns} --from-file=dash --dry-run=client -o yaml > "$out"
+    '';
 in
 {
   manifests = [
@@ -150,6 +193,9 @@ in
               - job_name: rabbitmq
                 static_configs:
                   - targets: ${rmqTargets}
+              - job_name: redis
+                static_configs:
+                  - targets: ${redisTargets}
               - job_name: cilium-agent
                 static_configs:
                   - targets: ${ciliumAgentTargets}
@@ -285,6 +331,7 @@ in
             apiVersion: 1
             datasources:
               - name: Prometheus
+                uid: ${dsUid}
                 type: prometheus
                 access: proxy
                 url: http://prometheus:${toString mon.prometheus.port}
@@ -436,6 +483,12 @@ in
       '';
     }
 
+    # ─── Community dashboards (grafana.com, fetched + hash-verified) ───
+    {
+      name = "monitoring/grafana-dashboards-community.yaml";
+      source = communityDashboardsCM;
+    }
+
     # ─── Grafana (Deployment, pinned to cp0, anonymous Admin) ──────────
     {
       name = "monitoring/grafana.yaml";
@@ -486,7 +539,12 @@ in
               - name: grafana
                 image: ${mon.grafana.image}:${mon.grafana.tag}
                 imagePullPolicy: Never
-                command: ["/bin/grafana", "server", "--homepath=/share/grafana"]
+                # Run from Grafana's real store path, not the image's /share
+                # symlink: Grafana 13's plugin loader rejects core-plugin files
+                # whose symlink-resolved path escapes the logical plugin dir, so
+                # a symlinked homepath crash-loops on startup. The store path has
+                # the same files as real dirs. (This is what the NixOS module does.)
+                command: ["${pkgs.grafana}/bin/grafana", "server", "--homepath=${pkgs.grafana}/share/grafana"]
                 env:
                 - name: HOME
                   value: /var/lib/grafana
@@ -528,8 +586,13 @@ in
                   mountPath: /etc/grafana/provisioning/datasources
                 - name: dashboard-provider
                   mountPath: /etc/grafana/provisioning/dashboards
+                # Sibling subdirs under the provider path (which is scanned
+                # recursively); nesting a mount inside the read-only soak
+                # ConfigMap mount would not work.
                 - name: dashboards
-                  mountPath: /etc/grafana/dashboards
+                  mountPath: /etc/grafana/dashboards/soak
+                - name: dashboards-community
+                  mountPath: /etc/grafana/dashboards/community
                 - name: data
                   mountPath: /var/lib/grafana
                 - name: logs
@@ -551,6 +614,9 @@ in
               - name: dashboards
                 configMap:
                   name: grafana-dashboards
+              - name: dashboards-community
+                configMap:
+                  name: grafana-dashboards-community
               - name: data
                 emptyDir: {}
               - name: logs

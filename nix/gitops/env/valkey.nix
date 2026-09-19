@@ -20,6 +20,7 @@
 let
   constants = import ../../constants.nix;
   c = constants.messageBus.valkey;
+  mon = constants.monitoring;
   ns = c.namespace;
   fqdn = "valkey-headless.${ns}.svc.${constants.k8s.clusterDomain}";
   master0 = "valkey-0.${fqdn}";
@@ -286,6 +287,36 @@ in
                     memory: 64Mi
                   limits:
                     cpu: 250m
+                    memory: 128Mi
+              # redis_exporter sidecar: scrapes this pod's Valkey over localhost
+              # with the shared password and exposes Prometheus metrics on
+              # :${toString mon.redisExporter.port}. Prometheus scrapes each pod
+              # via the headless Service (see the `redis` job in monitoring.nix)
+              # so the Valkey/Redis Grafana dashboards have per-node data.
+              - name: redis-exporter
+                image: ${mon.redisExporter.image}:${mon.redisExporter.tag}
+                imagePullPolicy: Never
+                command: ["/bin/redis_exporter"]
+                args:
+                - "-redis.addr=redis://localhost:${toString c.clientPort}"
+                - "-web.listen-address=:${toString mon.redisExporter.port}"
+                env:
+                # redis_exporter reads REDIS_PASSWORD from the environment, so
+                # the password stays out of the process args / ps output.
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: valkey-credentials
+                      key: password
+                ports:
+                - containerPort: ${toString mon.redisExporter.port}
+                  name: metrics
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 32Mi
+                  limits:
+                    cpu: 200m
                     memory: 128Mi
               volumes:
               - name: config

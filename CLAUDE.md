@@ -9,11 +9,11 @@ them from the host over NodePorts.
 
 ## VM Access
 
-You have full root SSH access to all 4 MicroVMs. Use the pre-generated SSH key:
+**Reach the nodes through the Nix wrapper, NOT raw `ssh`** (see the "Cluster
+access & SSH auth" section of `README.md` for the full rationale):
 
 ```bash
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-  -i secrets/ssh-ed25519 root@<IP> '<command>'
+nix run .#k8s-vm-ssh -- --node=cp0 '<command>'
 ```
 
 | Node | IP |
@@ -23,15 +23,31 @@ ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERRO
 | cp2 | 10.33.33.12 |
 | w3  | 10.33.33.13 |
 
-For kubectl commands via SSH, always set KUBECONFIG:
+Why the wrapper (`nix/microvm-scripts.nix`): it authenticates deterministically
+and can **never** spawn an interactive/GUI (askpass) password popup. It tries
+the repo key `secrets/ssh-ed25519` only (`IdentitiesOnly` + `IdentityAgent=none`
+so your ssh-agent's unrelated keys don't cause *"Too many authentication
+failures"*; `BatchMode` + publickey-only so a rejected key errors instead of
+prompting), then falls back to the cluster password (`ssh.password` in
+`nix/constants.nix`) via `sshpass`. In practice **cp0 accepts the key; the
+worker nodes accept only the password** — the wrapper handles both. Running
+raw `ssh root@<ip>` offers agent keys (→ auth failures) and, on failure, pops
+an X11 askpass GUI — don't.
+
+For kubectl commands via SSH, always set KUBECONFIG (non-interactive SSH does
+not source the profile, so a bare `kubectl` hits localhost:8080 and fails):
 
 ```bash
-ssh -i secrets/ssh-ed25519 root@10.33.33.10 \
-  'KUBECONFIG=/var/lib/kubernetes/pki/admin-kubeconfig kubectl get pods -A'
+nix run .#k8s-vm-ssh -- --node=cp0 \
+  env KUBECONFIG=/var/lib/kubernetes/pki/admin-kubeconfig kubectl get pods -A
 ```
 
 For complex kubectl arguments (jsonpath, etc.), use `bash -s <<'REMOTE_EOF'` heredoc
 to avoid SSH argument escaping issues.
+
+To load Nix-built images into an already-running cluster's containerd (the
+boot-time preload only runs at boot), use `nix run .#k8s-image-import`
+(`--node=` / `--image=` to narrow); it uses the same wrapper.
 
 ## Rendered Manifests Workflow
 

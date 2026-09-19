@@ -86,7 +86,10 @@ EOF
 
       # ─── Fetch bus credentials from the cluster (via cp0) ────────────
       log() { echo "[chaos] $*"; }
-      kexec() { k8s-vm-ssh --node=cp0 "$@"; }
+      # Run a command on cp0 with KUBECONFIG set. Non-interactive SSH does
+      # not source the profile, so kubectl would otherwise default to
+      # localhost:8080 and fail — silently corrupting credential fetches.
+      kexec() { k8s-vm-ssh --node=cp0 env KUBECONFIG=/var/lib/kubernetes/pki/admin-kubeconfig "$@"; }
 
       log "reading bus credentials from cluster"
       RABBITMQ_PASS="$(kexec kubectl -n ${mb.rabbitmq.namespace} get secret rabbitmq-credentials \

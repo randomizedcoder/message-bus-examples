@@ -435,12 +435,55 @@ Grafana `http://10.33.33.10:30300` (dashboard uid `soak`) or Prometheus
 
 ---
 
+## Cluster access & SSH auth (read this before SSHing to a node)
+
+**Always reach the nodes through the Nix targets — never raw `ssh`.**
+
+```bash
+# Run a command on a node (cp0 | cp1 | cp2 | w3):
+nix run .#k8s-vm-ssh -- --node=cp0 <command>
+
+# kubectl on a node needs KUBECONFIG — non-interactive SSH does NOT source the
+# profile, so a bare `kubectl` hits localhost:8080 and fails:
+nix run .#k8s-vm-ssh -- --node=cp0 \
+  env KUBECONFIG=/var/lib/kubernetes/pki/admin-kubeconfig kubectl get pods -A
+
+# Load Nix-built images into a *running* cluster's containerd (all nodes, or one):
+nix run .#k8s-image-import                                 # every image, every node
+nix run .#k8s-image-import -- --node=w3 --image=grafana    # one image, one node
+```
+
+**Why the wrapper, specifically — it configures auth so it is deterministic
+and can never spawn an interactive/GUI (askpass) password popup:**
+
+1. It tries the repo key `secrets/ssh-ed25519` **only** — `IdentitiesOnly=yes`
+   + `IdentityAgent=none` deliberately ignore your local `ssh-agent`. (Your
+   agent's unrelated keys would otherwise be offered first and the servers
+   reject them with *"Too many authentication failures"* once `MaxAuthTries`
+   is hit.) `BatchMode=yes` + publickey-only mean a rejected key just errors
+   out instead of falling back to an interactive prompt.
+2. If the key is not accepted, it falls back to the **cluster password**
+   (`ssh.password` in `nix/constants.nix`) via `sshpass` with
+   `PubkeyAuthentication=no` — fed non-interactively, so again no GUI prompt.
+
+In practice **cp0 accepts the repo key; the worker nodes (cp1/cp2/w3) accept
+only the cluster password** — the wrapper handles both transparently, so you
+never notice. `k8s-image-import` uses the same wrapper, so it works everywhere.
+
+**Do NOT run raw `ssh root@<ip>` from automation.** It uses your ambient
+`ssh-agent`, which (a) offers unrelated keys → *"Too many authentication
+failures"*, and (b) on failure falls back to keyboard-interactive/password →
+an **X11 askpass GUI popup**. The scripts that drive the cluster
+(`k8s-soak-test`, `k8s-chaos-failover`) go through the wrapper via a `kexec`
+helper that also sets `KUBECONFIG` — mirror that pattern, don't hand-roll ssh.
+
 ## Nix targets reference
 
 **Network / VM lifecycle**
 `k8s-check-host`, `k8s-network-setup`, `k8s-network-teardown`,
 `k8s-start-all`, `k8s-vm-check`, `k8s-vm-ssh`, `k8s-vm-stop`,
-`k8s-vm-stop-one`, `k8s-vm-start-one`, `k8s-vm-wipe`, `k8s-cluster-rebuild`.
+`k8s-vm-stop-one`, `k8s-vm-start-one`, `k8s-vm-wipe`, `k8s-cluster-rebuild`,
+`k8s-image-import` (import Nix images into a running cluster's containerd).
 
 **Secrets / certs / manifests**
 `k8s-gen-secrets`, `k8s-gen-certs`, `k8s-render-manifests`
@@ -449,7 +492,7 @@ Grafana `http://10.33.33.10:30300` (dashboard uid `soak`) or Prometheus
 **Bus images** (`nix build .#…`)
 `nats-image`, `rabbitmq-image`, `mosquitto-image`, `valkey-image`,
 `prometheus-image`, `prometheus-nats-exporter-image`, `grafana-image`,
-`message-bus-clients`.
+`prometheus-redis-exporter-image`, `message-bus-clients`.
 
 **Pub/sub clients** (`nix run .#…`)
 `nats-pub`/`nats-sub`, `rabbitmq-pub`/`rabbitmq-sub`,
