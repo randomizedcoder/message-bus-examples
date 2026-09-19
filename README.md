@@ -63,6 +63,7 @@ dashboards fetched from grafana.com by revision + sha256):
 | **RabbitMQ** | [10991](https://grafana.com/grafana/dashboards/10991) | queues, messages, cluster |
 | **Valkey** | [24733](https://grafana.com/grafana/dashboards/24733) | Valkey/Redis instance metrics |
 | **Redis Exporter** | [14091](https://grafana.com/grafana/dashboards/14091) | redis_exporter overview |
+| **Node Exporter Full** | [1860](https://grafana.com/grafana/dashboards/1860) | per-VM CPU/mem/net/disk + systemd units & processes |
 
 See [Soak test](#soak-test).
 

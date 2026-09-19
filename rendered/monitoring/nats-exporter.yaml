@@ -15,6 +15,18 @@ spec:
       labels:
         app: nats-exporter
     spec:
+      # Pin to cp0 — the node the soak fault-loop never kills. Without
+      # this the exporter floats onto a worker (e.g. w3) and every
+      # rolling node kill takes NATS metrics down with it, gapping the
+      # NATS/JetStream dashboards. Same rationale as Prometheus/Grafana.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [ k8s-cp0 ]
       containers:
       - name: nats-exporter
         image: messagebus.local/prometheus-nats-exporter:0.15.0

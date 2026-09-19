@@ -77,6 +77,10 @@ let
     { file = "rabbitmq";       id = 10991; rev = 15; sha256 = "sha256-+Yoh/lDIXB2kHRqaQp0EqlsTfJAldTlF8bU+j2/B5qI="; }
     { file = "valkey";         id = 24733; rev = 2;  sha256 = "sha256-revsZl1eDlO0RKt6xjr/ZfRcTv5hKngxigB6W6+pVRw="; }
     { file = "redis-exporter"; id = 14091; rev = 1;  sha256 = "sha256-OkMixhIT6fkptYrM54HEbt/8BjOqZIltzyWE+TR1RUc="; }
+    # Node Exporter Full — host CPU/mem/net/disk/systemd/processes for all 4 VMs.
+    # Unlike the others this one has no DS_PROMETHEUS __input; it references a
+    # `ds_prometheus` datasource *template variable* instead (handled below).
+    { file = "node-exporter-full"; id = 1860; rev = 45; sha256 = "sha256-GExrdAnzBtp1Ul13cvcZRbEM6iOtFrXXjEaY6g6lGYY="; }
   ];
   fetchDash = d: pkgs.fetchurl {
     url = "https://grafana.com/api/dashboards/${toString d.id}/revisions/${toString d.rev}/download";
@@ -87,8 +91,17 @@ let
     ''
       mkdir dash
       ${lib.concatMapStringsSep "\n" (d: ''
-        sed 's/[$]{DS_PROMETHEUS}/${dsUid}/g' ${fetchDash d} \
-          | jq 'del(.__inputs, .__requires, .__elements) | .id = null | .uid = "${d.file}"' \
+        # Concretize both datasource-reference styles to our provisioned uid:
+        #   DS_PROMETHEUS  — the import __input placeholder (most dashboards)
+        #   ds_prometheus  — a datasource *template variable* (1860)
+        # then strip the import-only keys and any now-orphaned datasource-type
+        # template variable (so no dangling datasource picker is shown).
+        sed -e 's/[$]{DS_PROMETHEUS}/${dsUid}/g' -e 's/[$]{ds_prometheus}/${dsUid}/g' ${fetchDash d} \
+          | jq 'del(.__inputs, .__requires, .__elements)
+                | .id = null | .uid = "${d.file}"
+                | if (.templating.list | type) == "array"
+                  then .templating.list |= map(select(.type != "datasource"))
+                  else . end' \
           > "dash/${d.file}.json"
       '') communityDashboardDefs}
       # Server-side apply: this ConfigMap (5 dashboards) is larger than the
@@ -125,6 +138,18 @@ in
               labels:
                 app: nats-exporter
             spec:
+              # Pin to cp0 — the node the soak fault-loop never kills. Without
+              # this the exporter floats onto a worker (e.g. w3) and every
+              # rolling node kill takes NATS metrics down with it, gapping the
+              # NATS/JetStream dashboards. Same rationale as Prometheus/Grafana.
+              affinity:
+                nodeAffinity:
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    nodeSelectorTerms:
+                    - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values: [ ${cp0Host} ]
               containers:
               - name: nats-exporter
                 image: ${mon.natsExporter.image}:${mon.natsExporter.tag}
