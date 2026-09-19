@@ -479,6 +479,11 @@ allocation cuts and natscli core-publish flush batching).
 > on the bridged MQTT brokers is the slow path (give MQTT a small `--count`).
 > See the MQTT note in [docs/benchmarks.md](docs/benchmarks.md).
 
+A third benchmark track — Protobuf vs ProtoJSON codecs, gRPC unary/streaming
+and the four buses carrying the same schema, with `sync.Pool`-based
+allocation control on both ends — is designed (not yet implemented) in
+[docs/protobuf-grpc-benchmark-design.md](docs/protobuf-grpc-benchmark-design.md).
+
 ---
 
 ## Cluster access & SSH auth (read this before SSHing to a node)
@@ -596,5 +601,5 @@ nix/images/                     # Nix-built OCI images (nats, rabbitmq, mosquitt
 nix/gitops/env/                 # base, argocd, cilium, storage, nats, rabbitmq, mqtt, valkey
 clients/                        # Go module: cmd/{natscli,rabbitmqcli,mqttcli,valkeycli}
 rendered/                       # committed rendered manifests (ArgoCD source)
-docs/                           # secrets.md, resilience-testing.md
+docs/                           # secrets.md, resilience-testing.md, benchmarks.md, protobuf-grpc-benchmark-design.md
 ```

@@ -10,6 +10,11 @@ Two complementary ways to benchmark the message-bus clients:
    and read consume rate + latency percentiles from the client OTel metrics via
    Prometheus.
 
+A third track — Protobuf/ProtoJSON codecs over gRPC and the buses with a
+`sync.Pool` allocation strategy — is designed in
+[protobuf-grpc-benchmark-design.md](protobuf-grpc-benchmark-design.md); it uses
+the `proto-bench` / `workloads` names so it does not collide with the two above.
+
 ## Micro-benchmarks
 
 ```bash
