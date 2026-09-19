@@ -21,6 +21,9 @@ data:
       - job_name: rabbitmq
         static_configs:
           - targets: ['rabbitmq-0.rabbitmq-headless.rabbitmq.svc.cluster.local:15692', 'rabbitmq-1.rabbitmq-headless.rabbitmq.svc.cluster.local:15692', 'rabbitmq-2.rabbitmq-headless.rabbitmq.svc.cluster.local:15692']
+      - job_name: redis
+        static_configs:
+          - targets: ['valkey-0.valkey-headless.valkey.svc.cluster.local:9121', 'valkey-1.valkey-headless.valkey.svc.cluster.local:9121', 'valkey-2.valkey-headless.valkey.svc.cluster.local:9121']
       - job_name: cilium-agent
         static_configs:
           - targets: ['10.33.33.10:9962', '10.33.33.11:9962', '10.33.33.12:9962', '10.33.33.13:9962']

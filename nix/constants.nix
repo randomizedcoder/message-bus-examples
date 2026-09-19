@@ -265,6 +265,14 @@ rec {
       tag   = "0.15.0";
       port  = 7777;        # /metrics scraped by Prometheus
     };
+    # redis_exporter runs as a sidecar in each Valkey pod (scrapes localhost
+    # :6379 with the shared password) so the Valkey/Redis Grafana dashboards
+    # have data. Prometheus scrapes each pod's :9121 via the headless Service.
+    redisExporter = {
+      image = "messagebus.local/prometheus-redis-exporter";
+      tag   = "1.90.0";
+      port  = 9121;
+    };
     grafana = {
       image    = "messagebus.local/grafana";
       tag      = "13.1.4";

@@ -94,6 +94,12 @@ let
       tag  = mon.grafana.tag;
       contents = with pkgs; [ busybox grafana ];
     };
+
+    prometheus-redis-exporter = mkImage {
+      name = mon.redisExporter.image;
+      tag  = mon.redisExporter.tag;
+      contents = with pkgs; [ busybox prometheus-redis-exporter ];
+    };
   };
 
   # Flat list the preload module + microvm generator consume.
@@ -106,6 +112,7 @@ let
     { name = mon.prometheus.image;   tag = mon.prometheus.tag;   archive = images.prometheus; }
     { name = mon.natsExporter.image; tag = mon.natsExporter.tag; archive = images.prometheus-nats-exporter; }
     { name = mon.grafana.image;      tag = mon.grafana.tag;      archive = images.grafana; }
+    { name = mon.redisExporter.image; tag = mon.redisExporter.tag; archive = images.prometheus-redis-exporter; }
   ];
 in
 {

@@ -155,6 +155,7 @@
             prometheus-image              = busImagesMod.images.prometheus;
             prometheus-nats-exporter-image = busImagesMod.images.prometheus-nats-exporter;
             grafana-image                 = busImagesMod.images.grafana;
+            prometheus-redis-exporter-image = busImagesMod.images.prometheus-redis-exporter;
           }
           # Go pub/sub CLI clients (all four binaries in one derivation).
           // { message-bus-clients = clients.package; }
@@ -177,6 +178,7 @@
             vmScripts = import (nixDir + "/microvm-scripts.nix") { inherit pkgs; };
             chaosScripts = import (nixDir + "/chaos-scripts.nix") { inherit pkgs; };
             soakScripts = import (nixDir + "/soak-scripts.nix") { inherit pkgs; };
+            imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
           {
             # Network management
@@ -225,6 +227,13 @@
             k8s-cluster-rebuild = {
               type = "app";
               program = "${vmScripts.clusterRebuild}/bin/k8s-cluster-rebuild";
+            };
+
+            # Import Nix-built images into a running cluster's containerd
+            # (live-cluster analogue of the boot-time preload module).
+            k8s-image-import = {
+              type = "app";
+              program = "${imageImportScripts.imageImport}/bin/k8s-image-import";
             };
 
             # Certificates (copies build-time certs to ./certs/ for inspection)
