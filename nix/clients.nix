@@ -23,7 +23,7 @@ let
     pname = "message-bus-clients";
     version = "0.1.0";
     src = ../clients;
-    vendorHash = "sha256-Uc1UIqu9GH3NFZ4g6xqQfVCbdhnLocLXvqoE+8mnGlg=";
+    vendorHash = "sha256-DcyJuJ+yhPgM+e2IohCQAF2lm4Wv9q7q38w7jX4re/Y=";
     subPackages = [
       "cmd/natscli"
       "cmd/rabbitmqcli"

@@ -38,6 +38,12 @@ NodePort.
 | **MQTT** | 3× Mosquitto, full-mesh bridged (MQTT 3.1.1) | surviving brokers keep serving; client reconnect | `30883` (MQTT 1883) |
 | **ValKey** | 1 primary + 2 replicas + 3 Sentinels | Sentinel auto-failover | `30637` (client 6379) |
 
+An in-cluster **observability stack** (pinned to cp0) rounds this out:
+Prometheus on `30900` and Grafana on `30300` (anonymous Admin, dashboard uid
+`soak`). Prometheus scrapes node_exporter on every VM (`:9100`), a
+`prometheus-nats-exporter`, RabbitMQ's `rabbitmq_prometheus` plugin, Cilium/Hubble,
+and the soak clients' OTel `/metrics`. See [Soak test](#soak-test).
+
 ---
 
 ## Design decision: Nix-built OCI images
@@ -391,6 +397,42 @@ ValKey `-addr`, plain MQTT), so those must never change.
 See [`docs/resilience-testing.md`](docs/resilience-testing.md) for the per-bus
 failover mechanics and expected behaviour.
 
+### Soak test
+
+Where the chaos harness runs one bus interaction at a time and measures
+recovery, the **soak test** runs *everything at once for hours* and measures how
+each client *holds up*:
+
+```bash
+# 4h run, one node killed every 15 min (cp0 spared); launch detached
+nohup nix run .#k8s-soak-test -- --duration 4h > soak.out 2>&1 &
+
+nix run .#k8s-soak-test -- --duration 10m --fault-interval 3m   # short trial
+nix run .#k8s-soak-test -- --no-faults                          # steady load only
+```
+
+It launches **all four buses in their HA modes** — NATS `-jetstream`, RabbitMQ
+`-durable` quorum, ValKey `-sentinels`, MQTT (native bridged) — as long-lived,
+auto-respawning publisher/subscriber pairs, **loops the [NATS concept
+demos](#nats-concept-examples)** on an interval (recording pass/fail), and injects
+**rolling single-node failures** (`cp1,cp2,w3`; never two at once, so JetStream's
+R3 quorum holds). Every client exports **OpenTelemetry metrics** (published,
+received, publish errors, reconnects, sequence gaps = lost messages, and
+publish/confirm latency) which the in-cluster **Prometheus** scrapes over the host
+bridge and **Grafana** charts on the `soak` dashboard.
+
+On exit the harness queries Prometheus and writes `soak-logs/report.md` +
+`summary.tsv` — a per-client table of published/received/loss/reconnects — plus
+`events.tsv` (fault timeline) and `demos.tsv` (demo pass/fail). Watch it live at
+Grafana `http://10.33.33.10:30300` (dashboard uid `soak`) or Prometheus
+`http://10.33.33.10:30900`.
+
+> **Report, don't assert.** Like the chaos harness, the soak *measures* rather
+> than pass/fails: expected loss (ValKey pub/sub and any in-flight message during
+> a kill) is recorded as data, while JetStream and RabbitMQ quorum should show
+> recovery with little or no loss. The stack is deployed via the same GitOps
+> flow as the buses; the images are Nix-built and preloaded like the brokers.
+
 ---
 
 ## Nix targets reference
@@ -406,6 +448,7 @@ failover mechanics and expected behaviour.
 
 **Bus images** (`nix build .#…`)
 `nats-image`, `rabbitmq-image`, `mosquitto-image`, `valkey-image`,
+`prometheus-image`, `prometheus-nats-exporter-image`, `grafana-image`,
 `message-bus-clients`.
 
 **Pub/sub clients** (`nix run .#…`)
@@ -413,7 +456,8 @@ failover mechanics and expected behaviour.
 `mqtt-pub`/`mqtt-sub`, `valkey-pub`/`valkey-sub`.
 
 **Testing**
-`k8s-chaos-failover`, `k8s-lifecycle-test-all`, `k8s-cluster-test`.
+`k8s-chaos-failover`, `k8s-soak-test`, `k8s-lifecycle-test-all`,
+`k8s-cluster-test`.
 
 ---
 

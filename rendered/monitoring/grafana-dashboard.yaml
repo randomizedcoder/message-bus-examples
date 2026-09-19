@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  soak.json: |
+    {
+      "uid": "soak",
+      "title": "Message-bus Soak",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "time": { "from": "now-1h", "to": "now" },
+      "refresh": "15s",
+      "templating": { "list": [] },
+      "annotations": { "list": [] },
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Scrape targets up (by job)",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "targets": [
+            { "expr": "sum by (job) (up)", "legendFormat": "{{job}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Node CPU busy % (by instance)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+          "targets": [
+            { "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[1m])) * 100)", "legendFormat": "{{instance}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Node memory available % (by instance)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+          "targets": [
+            { "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100", "legendFormat": "{{instance}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "RabbitMQ messages ready (by node)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "targets": [
+            { "expr": "sum by (instance) (rabbitmq_queue_messages_ready)", "legendFormat": "{{instance}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "NATS connections (by server)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "targets": [
+            { "expr": "gnatsd_varz_connections", "legendFormat": "{{server_id}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "row",
+          "title": "Soak clients",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
+        },
+        {
+          "type": "timeseries",
+          "title": "Publish vs receive rate (msg/s, by bus)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
+          "targets": [
+            { "expr": "sum by (bus) (rate(mbclient_published_total[1m]))", "legendFormat": "{{bus}} pub", "refId": "A" },
+            { "expr": "sum by (bus) (rate(mbclient_received_total[1m]))", "legendFormat": "{{bus}} recv", "refId": "B" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Cumulative lost messages (sequence gaps, by bus)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "targets": [
+            { "expr": "sum by (bus) (mbclient_receive_gaps_total)", "legendFormat": "{{bus}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Client reconnects (cumulative, by bus)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "targets": [
+            { "expr": "sum by (bus) (mbclient_reconnects_total)", "legendFormat": "{{bus}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Publish/confirm latency p99 (s, by bus)",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            { "expr": "histogram_quantile(0.99, sum by (le, bus) (rate(mbclient_request_latency_seconds_bucket[5m])))", "legendFormat": "{{bus}}", "refId": "A" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Publish errors rate (msg/s, by bus)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 41 },
+          "datasource": { "type": "prometheus", "uid": "Prometheus" },
+          "targets": [
+            { "expr": "sum by (bus) (rate(mbclient_publish_errors_total[1m]))", "legendFormat": "{{bus}}", "refId": "A" }
+          ]
+        }
+      ]
+    }
+

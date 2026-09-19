@@ -18,10 +18,20 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/cli"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/metrics"
 )
 
 func main() {
 	f := cli.Parse("natscli", "127.0.0.1:30422", "")
+
+	mode := "core"
+	if f.JetStream {
+		mode = "jetstream"
+	}
+	rec, err := metrics.Setup(metrics.Config{Addr: f.MetricsAddr, Bus: "nats", Mode: mode, Role: f.Cmd})
+	if err != nil {
+		log.Fatalf("metrics: %v", err)
+	}
 
 	nc, err := nats.Connect("nats://"+f.Addr,
 		nats.RetryOnFailedConnect(true),
@@ -31,6 +41,7 @@ func main() {
 			log.Printf("disconnected: %v", err)
 		}),
 		nats.ReconnectHandler(func(c *nats.Conn) {
+			rec.IncReconnect()
 			log.Printf("reconnected to %s", c.ConnectedUrl())
 		}),
 	)
@@ -40,27 +51,35 @@ func main() {
 	defer nc.Drain()
 
 	if f.JetStream {
-		runJetStream(f, nc)
+		runJetStream(f, nc, rec)
 		return
 	}
-	runCore(f, nc)
+	runCore(f, nc, rec)
 }
 
 // runCore is the default fire-and-forget core NATS path.
-func runCore(f *cli.Flags, nc *nats.Conn) {
+func runCore(f *cli.Flags, nc *nats.Conn, rec metrics.Recorder) {
 	switch f.Cmd {
 	case "pub":
 		if err := f.PubLoop(func(body string) error {
 			if err := nc.Publish(f.Subject, []byte(body)); err != nil {
+				rec.IncPublishError()
 				return err
 			}
-			return nc.Flush()
+			if err := nc.Flush(); err != nil {
+				rec.IncPublishError()
+				return err
+			}
+			rec.IncPublished()
+			return nil
 		}); err != nil {
 			log.Fatalf("%v", err)
 		}
 	case "sub":
 		lim := f.NewLimiter()
+		var gaps metrics.GapTracker
 		if _, err := nc.Subscribe(f.Subject, func(m *nats.Msg) {
+			metrics.RecordReceived(rec, &gaps, string(m.Data))
 			f.Emit(m.Subject, string(m.Data))
 			lim.Hit()
 		}); err != nil {
@@ -76,7 +95,7 @@ func runCore(f *cli.Flags, nc *nats.Conn) {
 
 // runJetStream is the durable path: a persistent, replicated stream plus a
 // durable consumer.
-func runJetStream(f *cli.Flags, nc *nats.Conn) {
+func runJetStream(f *cli.Flags, nc *nats.Conn, rec metrics.Recorder) {
 	js, err := nc.JetStream()
 	if err != nil {
 		log.Fatalf("jetstream: %v", err)
@@ -89,15 +108,21 @@ func runJetStream(f *cli.Flags, nc *nats.Conn) {
 	switch f.Cmd {
 	case "pub":
 		if err := f.PubLoop(func(body string) error {
-			_, err := js.Publish(f.Subject, []byte(body))
-			return err
+			if _, err := js.Publish(f.Subject, []byte(body)); err != nil {
+				rec.IncPublishError()
+				return err
+			}
+			rec.IncPublished()
+			return nil
 		}); err != nil {
 			log.Fatalf("%v", err)
 		}
 	case "sub":
 		lim := f.NewLimiter()
+		var gaps metrics.GapTracker
 		durable := stream + "_CLI"
 		if _, err := js.Subscribe(f.Subject, func(m *nats.Msg) {
+			metrics.RecordReceived(rec, &gaps, string(m.Data))
 			f.Emit(m.Subject, string(m.Data))
 			_ = m.Ack()
 			lim.Hit()

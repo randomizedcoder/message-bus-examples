@@ -23,6 +23,7 @@
 let
   constants = import ../constants.nix;
   mb = constants.messageBus;
+  mon = constants.monitoring;
 
   mkImage = { name, tag, contents, config ? { } }:
     pkgs.dockerTools.buildLayeredImage {
@@ -70,6 +71,29 @@ let
       tag  = mb.valkey.tag;
       contents = with pkgs; [ busybox valkey ];
     };
+
+    # ─── Observability stack ───────────────────────────────────────────
+    # Prometheus, its NATS exporter, and Grafana — same no-registry pattern
+    # as the buses. Runtime paths/flags are supplied by the Deployments in
+    # nix/gitops/env/monitoring.nix (e.g. Grafana's GF_PATHS_*), so the images
+    # only need the binary plus a busybox userland.
+    prometheus = mkImage {
+      name = mon.prometheus.image;
+      tag  = mon.prometheus.tag;
+      contents = with pkgs; [ busybox prometheus ];
+    };
+
+    prometheus-nats-exporter = mkImage {
+      name = mon.natsExporter.image;
+      tag  = mon.natsExporter.tag;
+      contents = with pkgs; [ busybox prometheus-nats-exporter ];
+    };
+
+    grafana = mkImage {
+      name = mon.grafana.image;
+      tag  = mon.grafana.tag;
+      contents = with pkgs; [ busybox grafana ];
+    };
   };
 
   # Flat list the preload module + microvm generator consume.
@@ -79,6 +103,9 @@ let
     { name = mb.rabbitmq.image; tag = mb.rabbitmq.tag; archive = images.rabbitmq; }
     { name = mb.mqtt.image;     tag = mb.mqtt.tag;     archive = images.mosquitto; }
     { name = mb.valkey.image;   tag = mb.valkey.tag;   archive = images.valkey; }
+    { name = mon.prometheus.image;   tag = mon.prometheus.tag;   archive = images.prometheus; }
+    { name = mon.natsExporter.image; tag = mon.natsExporter.tag; archive = images.prometheus-nats-exporter; }
+    { name = mon.grafana.image;      tag = mon.grafana.tag;      archive = images.grafana; }
   ];
 in
 {

@@ -88,6 +88,7 @@ func TestParseArgs(t *testing.T) {
 				expectBool(t, "JetStream", f.JetStream, false)
 				expectBool(t, "Durable", f.Durable, false)
 				expectStr(t, "Sentinels", f.Sentinels, "")
+				expectStr(t, "MetricsAddr", f.MetricsAddr, "")
 				if f.interval != 0 {
 					t.Errorf("interval = %v, expected 0", f.interval)
 				}
@@ -106,7 +107,7 @@ func TestParseArgs(t *testing.T) {
 				"sub", "-addr", "h:1", "-subject", "s", "-msg", "m",
 				"-user", "u", "-pass", "p", "-count", "5", "-rate", "10/s",
 				"-timeout", "3s", "-json", "-jetstream", "-durable",
-				"-sentinels", "a:1,b:2",
+				"-sentinels", "a:1,b:2", "-metrics-addr", "10.33.33.1:9200",
 			},
 			check: func(t *testing.T, f *Flags) {
 				expectStr(t, "Cmd", f.Cmd, "sub")
@@ -123,6 +124,7 @@ func TestParseArgs(t *testing.T) {
 				expectBool(t, "JetStream", f.JetStream, true)
 				expectBool(t, "Durable", f.Durable, true)
 				expectStr(t, "Sentinels", f.Sentinels, "a:1,b:2")
+				expectStr(t, "MetricsAddr", f.MetricsAddr, "10.33.33.1:9200")
 				if f.interval != 100*time.Millisecond {
 					t.Errorf("interval = %v, expected 100ms", f.interval)
 				}

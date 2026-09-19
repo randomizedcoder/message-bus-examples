@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/cli"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -42,13 +43,27 @@ func main() {
 	f := cli.Parse("valkeycli", "127.0.0.1:30637", os.Getenv("VALKEY_PASS"))
 	ctx := context.Background()
 
+	mode := "direct"
+	if f.Sentinels != "" {
+		mode = "sentinel"
+	}
+	rec, err := metrics.Setup(metrics.Config{Addr: f.MetricsAddr, Bus: "valkey", Mode: mode, Role: f.Cmd})
+	if err != nil {
+		log.Fatalf("metrics: %v", err)
+	}
+
 	rdb := newClient(f)
 	defer rdb.Close()
 
 	switch f.Cmd {
 	case "pub":
 		if err := f.PubLoop(func(body string) error {
-			return rdb.Publish(ctx, f.Subject, body).Err()
+			if err := rdb.Publish(ctx, f.Subject, body).Err(); err != nil {
+				rec.IncPublishError()
+				return err
+			}
+			rec.IncPublished()
+			return nil
 		}); err != nil {
 			log.Fatalf("%v (check -pass)", err)
 		}
@@ -61,6 +76,7 @@ func main() {
 		log.Printf("subscribed to %q on %s; waiting for messages (Ctrl-C to quit)", f.Subject, target(f))
 		stop := f.Stop()
 		lim := f.NewLimiter()
+		var gaps metrics.GapTracker
 		ch := ps.Channel()
 		for {
 			select {
@@ -69,6 +85,7 @@ func main() {
 			case <-lim.Done():
 				return
 			case m := <-ch:
+				metrics.RecordReceived(rec, &gaps, m.Payload)
 				f.Emit(m.Channel, m.Payload)
 				lim.Hit()
 			}

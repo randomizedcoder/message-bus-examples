@@ -32,10 +32,20 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/cli"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/metrics"
 )
 
 func main() {
 	f := cli.Parse("rabbitmqcli", "127.0.0.1:30567", os.Getenv("RABBITMQ_PASS"))
+
+	mode := "fanout"
+	if f.Durable {
+		mode = "durable"
+	}
+	rec, err := metrics.Setup(metrics.Config{Addr: f.MetricsAddr, Bus: "rabbitmq", Mode: mode, Role: f.Cmd})
+	if err != nil {
+		log.Fatalf("metrics: %v", err)
+	}
 
 	url := fmt.Sprintf("amqp://%s:%s@%s/", f.User, f.Pass, f.Addr)
 	conn, err := amqp.Dial(url)
@@ -51,29 +61,35 @@ func main() {
 	defer ch.Close()
 
 	if f.Durable {
-		runQuorum(f, ch)
+		runQuorum(f, ch, rec)
 		return
 	}
-	runFanout(f, ch)
+	runFanout(f, ch, rec)
 }
 
 // publishConfirmed publishes each message with publisher confirms and blocks
-// for the broker's ack, returning an error on nack.
-func publishConfirmed(f *cli.Flags, ch *amqp.Channel, exchange, key string, mode uint8) {
+// for the broker's ack, returning an error on nack. The confirm round-trip is
+// timed into mbclient_request_latency_seconds.
+func publishConfirmed(f *cli.Flags, ch *amqp.Channel, exchange, key string, mode uint8, rec metrics.Recorder) {
 	if err := ch.Confirm(false); err != nil {
 		log.Fatalf("enable publisher confirms: %v", err)
 	}
 	if err := f.PubLoop(func(body string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		start := time.Now()
 		dc, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, key, false, false,
 			amqp.Publishing{ContentType: "text/plain", Body: []byte(body), DeliveryMode: mode})
 		if err != nil {
+			rec.IncPublishError()
 			return err
 		}
 		if acked := dc.Wait(); !acked {
+			rec.IncPublishError()
 			return fmt.Errorf("message nacked by broker")
 		}
+		rec.ObserveLatency(time.Since(start))
+		rec.IncPublished()
 		return nil
 	}); err != nil {
 		log.Fatalf("%v", err)
@@ -81,10 +97,11 @@ func publishConfirmed(f *cli.Flags, ch *amqp.Channel, exchange, key string, mode
 }
 
 // consume drains deliveries from msgs into Emit, honoring -count/-timeout.
-func consume(f *cli.Flags, msgs <-chan amqp.Delivery, label string) {
+func consume(f *cli.Flags, msgs <-chan amqp.Delivery, label string, rec metrics.Recorder) {
 	log.Printf("subscribed to %s on %s; waiting for messages (Ctrl-C to quit)", label, f.Addr)
 	stop := f.Stop()
 	lim := f.NewLimiter()
+	var gaps metrics.GapTracker
 	for {
 		select {
 		case <-stop:
@@ -95,6 +112,7 @@ func consume(f *cli.Flags, msgs <-chan amqp.Delivery, label string) {
 			if !ok {
 				return
 			}
+			metrics.RecordReceived(rec, &gaps, string(m.Body))
 			f.Emit(f.Subject, string(m.Body))
 			lim.Hit()
 		}
@@ -103,13 +121,13 @@ func consume(f *cli.Flags, msgs <-chan amqp.Delivery, label string) {
 
 // runFanout is the default ephemeral pub/sub: a fanout exchange with per-
 // subscriber exclusive queues.
-func runFanout(f *cli.Flags, ch *amqp.Channel) {
+func runFanout(f *cli.Flags, ch *amqp.Channel, rec metrics.Recorder) {
 	if err := ch.ExchangeDeclare(f.Subject, "fanout", false, true, false, false, nil); err != nil {
 		log.Fatalf("exchange declare: %v", err)
 	}
 	switch f.Cmd {
 	case "pub":
-		publishConfirmed(f, ch, f.Subject, "", amqp.Transient)
+		publishConfirmed(f, ch, f.Subject, "", amqp.Transient, rec)
 	case "sub":
 		q, err := ch.QueueDeclare("", false, true, true, false, nil)
 		if err != nil {
@@ -122,13 +140,13 @@ func runFanout(f *cli.Flags, ch *amqp.Channel) {
 		if err != nil {
 			log.Fatalf("consume: %v", err)
 		}
-		consume(f, msgs, fmt.Sprintf("exchange %q", f.Subject))
+		consume(f, msgs, fmt.Sprintf("exchange %q", f.Subject), rec)
 	}
 }
 
 // runQuorum is the durable path: a replicated quorum queue with persistent
 // messages, delivered via the default exchange (work-queue semantics).
-func runQuorum(f *cli.Flags, ch *amqp.Channel) {
+func runQuorum(f *cli.Flags, ch *amqp.Channel, rec metrics.Recorder) {
 	queue := f.Subject + ".quorum"
 	if _, err := ch.QueueDeclare(queue, true, false, false, false,
 		amqp.Table{"x-queue-type": "quorum"}); err != nil {
@@ -137,12 +155,12 @@ func runQuorum(f *cli.Flags, ch *amqp.Channel) {
 	switch f.Cmd {
 	case "pub":
 		// Default exchange ("") routes by queue name.
-		publishConfirmed(f, ch, "", queue, amqp.Persistent)
+		publishConfirmed(f, ch, "", queue, amqp.Persistent, rec)
 	case "sub":
 		msgs, err := ch.Consume(queue, "", true, false, false, false, nil)
 		if err != nil {
 			log.Fatalf("consume: %v", err)
 		}
-		consume(f, msgs, fmt.Sprintf("quorum queue %q", queue))
+		consume(f, msgs, fmt.Sprintf("quorum queue %q", queue), rec)
 	}
 }

@@ -28,13 +28,17 @@ let
   mqtt     = import (envDir + "/mqtt.nix")     { inherit pkgs lib; };
   valkey   = import (envDir + "/valkey.nix")   { inherit pkgs lib; };
 
+  # Observability (in-cluster Prometheus + Grafana + NATS exporter)
+  monitoring = import (envDir + "/monitoring.nix") { inherit pkgs lib; };
+
   # Combine all manifests
   allManifests = base.manifests ++ argocd.manifests ++ cilium.manifests
     ++ storage.manifests
     ++ nats.manifests
     ++ rabbitmq.manifests
     ++ mqtt.manifests
-    ++ valkey.manifests;
+    ++ valkey.manifests
+    ++ monitoring.manifests;
 
   emitStep = m:
     if m ? source then ''
