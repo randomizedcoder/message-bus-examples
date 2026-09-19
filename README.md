@@ -39,10 +39,32 @@ NodePort.
 | **ValKey** | 1 primary + 2 replicas + 3 Sentinels | Sentinel auto-failover | `30637` (client 6379) |
 
 An in-cluster **observability stack** (pinned to cp0) rounds this out:
-Prometheus on `30900` and Grafana on `30300` (anonymous Admin, dashboard uid
-`soak`). Prometheus scrapes node_exporter on every VM (`:9100`), a
-`prometheus-nats-exporter`, RabbitMQ's `rabbitmq_prometheus` plugin, Cilium/Hubble,
-and the soak clients' OTel `/metrics`. See [Soak test](#soak-test).
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| **Grafana** | <http://10.33.33.10:30300> | anonymous Admin (no login); dashboards below |
+| **Prometheus** | <http://10.33.33.10:30900> | scrape targets + PromQL |
+
+(NodePorts, so any node IP works — cp0 `10.33.33.10` is the stable one, never
+killed by the soak's fault rotation.)
+
+Prometheus scrapes node_exporter on every VM (`:9100`), a
+`prometheus-nats-exporter`, RabbitMQ's `rabbitmq_prometheus` plugin, a
+`redis_exporter` sidecar in each ValKey pod, Cilium/Hubble, and the soak
+clients' OTel `/metrics`. Grafana ships a provisioned Prometheus datasource and
+these dashboards (the soak one is custom; the rest are pinned community
+dashboards fetched from grafana.com by revision + sha256):
+
+| Dashboard | Source | Covers |
+|-----------|--------|--------|
+| **Message-bus Soak** (uid `soak`) | custom | per-client publish/receive/loss/reconnects/latency + infra |
+| **NATS Servers** | [2279](https://grafana.com/grafana/dashboards/2279) | NATS hub/leaf server metrics |
+| **NATS JetStream** | [14725](https://grafana.com/grafana/dashboards/14725) | streams, consumers, R3 state |
+| **RabbitMQ** | [10991](https://grafana.com/grafana/dashboards/10991) | queues, messages, cluster |
+| **Valkey** | [24733](https://grafana.com/grafana/dashboards/24733) | Valkey/Redis instance metrics |
+| **Redis Exporter** | [14091](https://grafana.com/grafana/dashboards/14091) | redis_exporter overview |
+
+See [Soak test](#soak-test).
 
 ---
 

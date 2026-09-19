@@ -13954,5 +13954,7 @@ data:
     }
 kind: ConfigMap
 metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: ServerSideApply=true
   name: grafana-dashboards-community
   namespace: monitoring

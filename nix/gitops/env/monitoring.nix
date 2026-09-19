@@ -91,8 +91,15 @@ let
           | jq 'del(.__inputs, .__requires, .__elements) | .id = null | .uid = "${d.file}"' \
           > "dash/${d.file}.json"
       '') communityDashboardDefs}
+      # Server-side apply: this ConfigMap (5 dashboards) is larger than the
+      # 256 KB cap on the client-side-apply `last-applied-configuration`
+      # annotation ArgoCD/kubectl would otherwise write, so a normal apply
+      # fails with "metadata.annotations: Too long". ServerSideApply skips that
+      # annotation entirely.
       kubectl create configmap grafana-dashboards-community \
-        --namespace=${ns} --from-file=dash --dry-run=client -o yaml > "$out"
+        --namespace=${ns} --from-file=dash --dry-run=client -o yaml \
+        | kubectl annotate --local -f - -o yaml \
+            argocd.argoproj.io/sync-options=ServerSideApply=true > "$out"
     '';
 in
 {
