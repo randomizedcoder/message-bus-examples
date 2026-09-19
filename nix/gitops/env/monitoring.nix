@@ -86,34 +86,65 @@ let
     url = "https://grafana.com/api/dashboards/${toString d.id}/revisions/${toString d.rev}/download";
     inherit (d) sha256;
   };
+  # ConfigMap name / volume name / mount subdir per dashboard.
+  dashCmName  = d: "grafana-dashboard-${d.file}";
+  dashVolName = d: "dash-${d.file}";
+
+  # One ConfigMap *per dashboard*, all emitted into a single multi-document
+  # YAML file (--- separated). Splitting per-dashboard keeps every object well
+  # under the ~1 MB etcd object limit — a single combined ConfigMap reached
+  # ~926 KB with 6 dashboards and would break outright as more are added.
   communityDashboardsCM = pkgs.runCommand "grafana-community-dashboards.yaml"
     { nativeBuildInputs = [ pkgs.jq pkgs.kubectl ]; }
     ''
-      mkdir dash
+      : > "$out"
       ${lib.concatMapStringsSep "\n" (d: ''
-        # Concretize both datasource-reference styles to our provisioned uid:
-        #   DS_PROMETHEUS  — the import __input placeholder (most dashboards)
-        #   ds_prometheus  — a datasource *template variable* (1860)
-        # then strip the import-only keys and any now-orphaned datasource-type
-        # template variable (so no dangling datasource picker is shown).
-        sed -e 's/[$]{DS_PROMETHEUS}/${dsUid}/g' -e 's/[$]{ds_prometheus}/${dsUid}/g' ${fetchDash d} \
+        # Point every datasource placeholder at our provisioned uid. Community
+        # dashboards name this differently — an import __input (DS_PROMETHEUS,
+        # DS_NATS-PROMETHEUS, DS__NATS-PROMETHEUS, ...) and/or a datasource-type
+        # template variable (ds_prometheus, 1860). Hardcoding one name silently
+        # leaves the others dangling -> panels bind to a missing datasource and
+        # render red "No data". So derive the exact placeholder names from THIS
+        # dashboard's __inputs + datasource-type template vars and rewrite each
+        # ${"$"}{name} token; then strip the import-only keys and the now-orphan
+        # datasource template var (no dangling picker).
+        mkdir -p "${d.file}"
+        names=$(jq -r '((.__inputs // [])[] | select(.type=="datasource") | .name),
+                       ((.templating.list // [])[] | select(.type=="datasource") | .name)' ${fetchDash d})
+        sedargs=()
+        for n in $names; do sedargs+=(-e "s|[$]{$n}|${dsUid}|g"); done
+        { if [ ''${#sedargs[@]} -gt 0 ]; then sed "''${sedargs[@]}" ${fetchDash d}; else cat ${fetchDash d}; fi; } \
           | jq 'del(.__inputs, .__requires, .__elements)
                 | .id = null | .uid = "${d.file}"
                 | if (.templating.list | type) == "array"
                   then .templating.list |= map(select(.type != "datasource"))
                   else . end' \
-          > "dash/${d.file}.json"
+          > "${d.file}/${d.file}.json"
+        # ServerSideApply on every dashboard CM: some (e.g. node-exporter-full)
+        # exceed the 256 KB cap on the client-side-apply annotation on their
+        # own, and the flag is harmless for the small ones.
+        echo '---' >> "$out"
+        kubectl create configmap ${dashCmName d} \
+          --namespace=${ns} --from-file="${d.file}" --dry-run=client -o yaml \
+          | kubectl annotate --local -f - -o yaml \
+              argocd.argoproj.io/sync-options=ServerSideApply=true >> "$out"
       '') communityDashboardDefs}
-      # Server-side apply: this ConfigMap (5 dashboards) is larger than the
-      # 256 KB cap on the client-side-apply `last-applied-configuration`
-      # annotation ArgoCD/kubectl would otherwise write, so a normal apply
-      # fails with "metadata.annotations: Too long". ServerSideApply skips that
-      # annotation entirely.
-      kubectl create configmap grafana-dashboards-community \
-        --namespace=${ns} --from-file=dash --dry-run=client -o yaml \
-        | kubectl annotate --local -f - -o yaml \
-            argocd.argoproj.io/sync-options=ServerSideApply=true > "$out"
     '';
+
+  # Grafana volumeMounts / volumes for the per-dashboard ConfigMaps. Each CM is
+  # mounted in its own subdir under the provider path (scanned recursively), so
+  # the file provider discovers them all. These strings are interpolated into
+  # the Deployment's '' block, whose literal lines are dedented by 8 spaces at
+  # eval time while interpolated text is not — so the continuation indents here
+  # are pre-dedented to the *rendered* column (mounts: 8/10, volumes: 6/8/10),
+  # matching the existing natsUrlArgs convention. First element gets its base
+  # indent from the template line.
+  communityVolumeMounts = lib.concatMapStringsSep "\n        " (d:
+    "- name: ${dashVolName d}\n          mountPath: /etc/grafana/dashboards/community/${d.file}"
+  ) communityDashboardDefs;
+  communityVolumes = lib.concatMapStringsSep "\n      " (d:
+    "- name: ${dashVolName d}\n        configMap:\n          name: ${dashCmName d}"
+  ) communityDashboardDefs;
 in
 {
   manifests = [
@@ -623,8 +654,8 @@ in
                 # ConfigMap mount would not work.
                 - name: dashboards
                   mountPath: /etc/grafana/dashboards/soak
-                - name: dashboards-community
-                  mountPath: /etc/grafana/dashboards/community
+                # One mount per community dashboard (each its own ConfigMap).
+                ${communityVolumeMounts}
                 - name: data
                   mountPath: /var/lib/grafana
                 - name: logs
@@ -646,9 +677,7 @@ in
               - name: dashboards
                 configMap:
                   name: grafana-dashboards
-              - name: dashboards-community
-                configMap:
-                  name: grafana-dashboards-community
+              ${communityVolumes}
               - name: data
                 emptyDir: {}
               - name: logs

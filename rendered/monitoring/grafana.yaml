@@ -96,8 +96,19 @@ spec:
         # ConfigMap mount would not work.
         - name: dashboards
           mountPath: /etc/grafana/dashboards/soak
-        - name: dashboards-community
-          mountPath: /etc/grafana/dashboards/community
+        # One mount per community dashboard (each its own ConfigMap).
+        - name: dash-nats-servers
+          mountPath: /etc/grafana/dashboards/community/nats-servers
+        - name: dash-nats-jetstream
+          mountPath: /etc/grafana/dashboards/community/nats-jetstream
+        - name: dash-rabbitmq
+          mountPath: /etc/grafana/dashboards/community/rabbitmq
+        - name: dash-valkey
+          mountPath: /etc/grafana/dashboards/community/valkey
+        - name: dash-redis-exporter
+          mountPath: /etc/grafana/dashboards/community/redis-exporter
+        - name: dash-node-exporter-full
+          mountPath: /etc/grafana/dashboards/community/node-exporter-full
         - name: data
           mountPath: /var/lib/grafana
         - name: logs
@@ -119,9 +130,24 @@ spec:
       - name: dashboards
         configMap:
           name: grafana-dashboards
-      - name: dashboards-community
+      - name: dash-nats-servers
         configMap:
-          name: grafana-dashboards-community
+          name: grafana-dashboard-nats-servers
+      - name: dash-nats-jetstream
+        configMap:
+          name: grafana-dashboard-nats-jetstream
+      - name: dash-rabbitmq
+        configMap:
+          name: grafana-dashboard-rabbitmq
+      - name: dash-valkey
+        configMap:
+          name: grafana-dashboard-valkey
+      - name: dash-redis-exporter
+        configMap:
+          name: grafana-dashboard-redis-exporter
+      - name: dash-node-exporter-full
+        configMap:
+          name: grafana-dashboard-node-exporter-full
       - name: data
         emptyDir: {}
       - name: logs
