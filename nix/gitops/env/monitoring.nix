@@ -49,13 +49,19 @@ let
     (i: "${mon.hostBridgeIP}:${toString (mon.clientMetricsBasePort + i)}")
     (lib.range 0 (mon.clientMetricsCount - 1)));
 
-  # NATS monitoring URLs the exporter polls (3 hub servers + the leaf); the
-  # exporter labels each series with server_name so per-node metrics are kept.
-  natsUrlList =
-    (map (i: "http://nats-${toString i}.nats-headless.${natsC.namespace}.${domain}:${toString natsC.monitorPort}")
+  # NATS exporter sidecars — one prometheus-nats-exporter per NATS pod, each
+  # polling only its OWN server's monitoring endpoint over localhost (see the
+  # sidecar in nats.nix). Prometheus scrapes each pod over the headless Service
+  # by pod FQDN (:7777), the same per-pod pattern as redis_exporter/Valkey.
+  # Running one exporter per server (co-located) is the exporter's own guidance:
+  # a single aggregating exporter returns HTTP 500 for the WHOLE scrape whenever
+  # any one monitored server is briefly unreachable, so under the soak's rolling
+  # node faults it was down ~60% of the time and gapped every NATS panel. Per
+  # pod, a single node fault gaps only that one server's target.
+  natsTargets = mkTargets (
+    (map (i: "nats-${toString i}.nats-headless.${natsC.namespace}.${domain}:${toString mon.natsExporter.port}")
       (lib.range 0 (natsC.replicas - 1)))
-    ++ [ "http://nats-leaf-0.nats-leaf-headless.${natsC.namespace}.${domain}:${toString natsC.monitorPort}" ];
-  natsUrlArgs = builtins.concatStringsSep "\n        " (map (u: "- \"${u}\"") natsUrlList);
+    ++ [ "nats-leaf-0.nats-leaf-headless.${natsC.namespace}.${domain}:${toString mon.natsExporter.port}" ]);
 
   # redis_exporter sidecars, one per Valkey pod, scraped over the headless
   # Service by pod FQDN (:9121).
@@ -136,9 +142,8 @@ let
   # the file provider discovers them all. These strings are interpolated into
   # the Deployment's '' block, whose literal lines are dedented by 8 spaces at
   # eval time while interpolated text is not — so the continuation indents here
-  # are pre-dedented to the *rendered* column (mounts: 8/10, volumes: 6/8/10),
-  # matching the existing natsUrlArgs convention. First element gets its base
-  # indent from the template line.
+  # are pre-dedented to the *rendered* column (mounts: 8/10, volumes: 6/8/10).
+  # First element gets its base indent from the template line.
   communityVolumeMounts = lib.concatMapStringsSep "\n        " (d:
     "- name: ${dashVolName d}\n          mountPath: /etc/grafana/dashboards/community/${d.file}"
   ) communityDashboardDefs;
@@ -148,86 +153,10 @@ let
 in
 {
   manifests = [
-    # ─── NATS exporter (NATS has no native Prometheus endpoint) ────────
-    {
-      name = "monitoring/nats-exporter.yaml";
-      content = ''
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: nats-exporter
-          namespace: ${ns}
-          labels:
-            app: nats-exporter
-        spec:
-          replicas: 1
-          selector:
-            matchLabels:
-              app: nats-exporter
-          template:
-            metadata:
-              labels:
-                app: nats-exporter
-            spec:
-              # Pin to cp0 — the node the soak fault-loop never kills. Without
-              # this the exporter floats onto a worker (e.g. w3) and every
-              # rolling node kill takes NATS metrics down with it, gapping the
-              # NATS/JetStream dashboards. Same rationale as Prometheus/Grafana.
-              affinity:
-                nodeAffinity:
-                  requiredDuringSchedulingIgnoredDuringExecution:
-                    nodeSelectorTerms:
-                    - matchExpressions:
-                      - key: kubernetes.io/hostname
-                        operator: In
-                        values: [ ${cp0Host} ]
-              containers:
-              - name: nats-exporter
-                image: ${mon.natsExporter.image}:${mon.natsExporter.tag}
-                imagePullPolicy: Never
-                command: ["/bin/prometheus-nats-exporter"]
-                args:
-                - "-varz"
-                - "-jsz=all"
-                - "-connz"
-                - "-leafz"
-                - "-routez"
-                - "-port"
-                - "${toString mon.natsExporter.port}"
-                ${natsUrlArgs}
-                ports:
-                - containerPort: ${toString mon.natsExporter.port}
-                  name: metrics
-                readinessProbe:
-                  httpGet:
-                    path: /metrics
-                    port: ${toString mon.natsExporter.port}
-                  initialDelaySeconds: 5
-                  periodSeconds: 15
-                resources:
-                  requests:
-                    cpu: 25m
-                    memory: 32Mi
-                  limits:
-                    cpu: 200m
-                    memory: 128Mi
-        ---
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: nats-exporter
-          namespace: ${ns}
-          labels:
-            app: nats-exporter
-        spec:
-          selector:
-            app: nats-exporter
-          ports:
-          - name: metrics
-            port: ${toString mon.natsExporter.port}
-            targetPort: ${toString mon.natsExporter.port}
-      '';
-    }
+    # NATS metrics come from a prometheus-nats-exporter sidecar in each NATS pod
+    # (defined in nats.nix), scraped per-pod over the headless Service — there is
+    # deliberately no central nats-exporter Deployment here (see natsTargets and
+    # the `nats` scrape job below for why per-pod isolation matters under faults).
 
     # ─── Prometheus config ─────────────────────────────────────────────
     {
@@ -252,7 +181,7 @@ in
                   - targets: ${nodeTargets}
               - job_name: nats
                 static_configs:
-                  - targets: ['nats-exporter:${toString mon.natsExporter.port}']
+                  - targets: ${natsTargets}
               - job_name: rabbitmq
                 static_configs:
                   - targets: ${rmqTargets}

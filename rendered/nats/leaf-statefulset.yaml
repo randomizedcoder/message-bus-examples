@@ -53,6 +53,32 @@ spec:
           limits:
             cpu: 500m
             memory: 512Mi
+      # prometheus-nats-exporter sidecar — see the hub StatefulSet above.
+      # One exporter per server, co-located, scraped per-pod so a worker
+      # fault gaps only the leaf's target, not the hub/JetStream metrics.
+      - name: nats-exporter
+        image: messagebus.local/prometheus-nats-exporter:0.15.0
+        imagePullPolicy: Never
+        command: ["/bin/prometheus-nats-exporter"]
+        args:
+        - "-varz"
+        - "-jsz=all"
+        - "-connz"
+        - "-leafz"
+        - "-routez"
+        - "-port"
+        - "7777"
+        - "http://localhost:8222"
+        ports:
+        - containerPort: 7777
+          name: metrics
+        resources:
+          requests:
+            cpu: 25m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
       volumes:
       - name: config
         configMap:
