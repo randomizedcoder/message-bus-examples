@@ -25,10 +25,10 @@ let
     src = ../clients;
     vendorHash = "sha256-DcyJuJ+yhPgM+e2IohCQAF2lm4Wv9q7q38w7jX4re/Y=";
     subPackages = [
-      "cmd/natscli"
-      "cmd/rabbitmqcli"
-      "cmd/mqttcli"
-      "cmd/valkeycli"
+      "nats/natscli"
+      "rabbitmq/rabbitmqcli"
+      "mqtt/mqttcli"
+      "valkey/valkeycli"
       # Self-contained NATS concept demos (see clients/nats/*/README.md).
       "nats/subjects"
       "nats/request-reply"
