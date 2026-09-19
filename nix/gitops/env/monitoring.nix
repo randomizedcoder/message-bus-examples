@@ -182,6 +182,19 @@ in
               - job_name: nats
                 static_configs:
                   - targets: ${natsTargets}
+                # Each per-pod exporter polls its own server over localhost, so
+                # prometheus-nats-exporter labels every gnatsd_* / jetstream_*
+                # series with an identical server_id="http://localhost:8222".
+                # Rewrite server_id to the pod name (from the unique instance
+                # label, e.g. nats-0.nats-headless...:7777 -> nats-0) so the NATS
+                # Server dashboard's per-server variable and panels (which key on
+                # server_id) distinguish the servers again. This also matches the
+                # server_name jsz already reports, keeping the two labels aligned.
+                metric_relabel_configs:
+                  - source_labels: [instance]
+                    regex: '([^.]+)\..*'
+                    target_label: server_id
+                    replacement: '$1'
               - job_name: rabbitmq
                 static_configs:
                   - targets: ${rmqTargets}
