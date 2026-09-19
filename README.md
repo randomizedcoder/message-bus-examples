@@ -456,6 +456,25 @@ Grafana `http://10.33.33.10:30300` (dashboard uid `soak`) or Prometheus
 > recovery with little or no loss. The stack is deployed via the same GitOps
 > flow as the buses; the images are Nix-built and preloaded like the brokers.
 
+### Benchmarks
+
+Two ways to benchmark the clients — hermetic Go micro-benchmarks over the shared
+per-message hot paths, and a live-bus throughput/latency harness:
+
+```bash
+nix run .#clients-bench                     # Go micro-benchmarks (no cluster; ns/op + allocs/op)
+nix run .#k8s-client-bench                  # per-bus publish/consume throughput + latency (live)
+nix run .#k8s-client-bench -- --count 500000 --buses nats,rabbitmq
+```
+
+The micro-benchmarks are compile-checked by `nix flake check` (not executed —
+timing is machine-dependent). The live harness publishes N messages unthrottled
+per bus, times the run, and reads consume rate + latency from the client OTel
+metrics via Prometheus, writing `bench-logs/bench.md`. See
+[docs/benchmarks.md](docs/benchmarks.md) for the covered paths, the findings, and
+the optimizations applied (per-message `PubLoop`/`ParseSeq` allocation cuts and
+natscli core-publish flush batching).
+
 ---
 
 ## Cluster access & SSH auth (read this before SSHing to a node)

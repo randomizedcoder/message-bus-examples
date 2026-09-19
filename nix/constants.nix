@@ -311,6 +311,21 @@ rec {
     nodes                  = "cp1,cp2,w3";  # kill rotation (cp0 spared)
   };
 
+  # ─── Client benchmark defaults ─────────────────────────────────────
+  # A short, unthrottled per-bus throughput/latency probe: publish N messages
+  # as fast as possible to a live subscriber and time the run, then read the
+  # consume rate and latency percentiles from the client OTel metrics via
+  # Prometheus. Reuses the soak's host metrics-port range (the two are not run
+  # at the same time). See nix/bench-scripts.nix.
+  bench = {
+    defaultCount   = 200000;                    # messages per publisher (unthrottled)
+    defaultMsgSize = 0;                          # >0 pads the body to ~N bytes; 0 = "bench"
+    defaultBuses   = "nats,rabbitmq,valkey,mqtt";
+    defaultLogDir  = "./bench-logs";
+    warmupSec      = 3;                          # let the subscriber connect before publishing
+    settleSec      = 3;                          # let final scrapes land before querying Prometheus
+  };
+
   # ─── ArgoCD service (NodePort reachable from host) ─────────────────
   argocd = {
     nodePortHttps = 30443;

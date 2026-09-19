@@ -178,6 +178,7 @@
             vmScripts = import (nixDir + "/microvm-scripts.nix") { inherit pkgs; };
             chaosScripts = import (nixDir + "/chaos-scripts.nix") { inherit pkgs; };
             soakScripts = import (nixDir + "/soak-scripts.nix") { inherit pkgs; };
+            benchScripts = import (nixDir + "/bench-scripts.nix") { inherit pkgs; };
             imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
           {
@@ -273,7 +274,15 @@
             };
           }
 
-          # Go pub/sub CLI clients (run from the host against NodePorts).
+          # Per-bus client throughput/latency benchmark (live cluster).
+          // {
+            k8s-client-bench = {
+              type = "app";
+              program = "${benchScripts.clientBench}/bin/k8s-client-bench";
+            };
+          }
+
+          # Go pub/sub CLI clients + the hermetic micro-benchmark runner.
           // clients.apps
 
           # Lifecycle test apps

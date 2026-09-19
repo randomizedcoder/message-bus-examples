@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -150,11 +151,17 @@ func RecordReceived(rec Recorder, g *GapTracker, data string) {
 // whitespace-delimited integer tail, so callers can skip gap accounting for
 // payloads that carry no sequence (e.g. a single-message publish).
 func ParseSeq(body string) (int64, bool) {
-	fields := strings.Fields(body)
-	if len(fields) == 0 {
+	// Isolate the last whitespace-delimited token without allocating a full
+	// field slice — this runs on every received message. TrimRightFunc /
+	// LastIndexFunc return substrings of body, so this is allocation-free.
+	tail := strings.TrimRightFunc(body, unicode.IsSpace)
+	if tail == "" {
 		return 0, false
 	}
-	n, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+	if i := strings.LastIndexFunc(tail, unicode.IsSpace); i >= 0 {
+		tail = strings.TrimLeftFunc(tail[i:], unicode.IsSpace)
+	}
+	n, err := strconv.ParseInt(tail, 10, 64)
 	if err != nil {
 		return 0, false
 	}
