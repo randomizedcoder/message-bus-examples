@@ -183,7 +183,7 @@ nix run .#rabbitmq-pub -- -pass "$RABBITMQ_PASS" -msg "hello rabbitmq"
 
 Each binary takes `pub`/`sub` as its first argument; the `nix run
 .#<bus>-<pub|sub>` apps are thin wrappers that prepend it. Sources live in
-`clients/cmd/*` (one small `main.go` per bus).
+`clients/<bus>/<bus>cli/` (one small `main.go` per bus).
 
 ### Scripting flags
 
