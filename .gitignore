@@ -22,3 +22,14 @@ certs/
 # Chaos / failover test logs
 chaos-logs/
 chaos-logs-*/
+
+# Stray compiled Go binaries left by a bare `go build` in the module. The
+# real binaries only ever come from `nix build`/`nix run`; each is named
+# after its leaf package directory. Listed explicitly so no source .go
+# file can ever match.
+clients/workloads/benchcli/benchcli
+clients/nats/natscli/natscli
+clients/rabbitmq/rabbitmqcli/rabbitmqcli
+clients/mqtt/mqttcli/mqttcli
+clients/valkey/valkeycli/valkeycli
+clients/benchcli
