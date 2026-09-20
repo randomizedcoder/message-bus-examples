@@ -60,6 +60,12 @@ func main() {
 	amqp := flag.String("amqp", "", "RabbitMQ URL, e.g. amqp://user:pass@rabbitmq.rabbitmq.svc:5672/ (Deploy RPC)")
 	valkeySentinels := flag.String("valkey-sentinels", "", "Valkey Sentinel host:port list, comma-separated (Deploy stream RPC)")
 	mqttAddr := flag.String("mqtt", "", "MQTT broker host:port, e.g. mqtt.mqtt.svc:1883 (Telemetry, one-way)")
+	// Off by default so the headline latency modes pay nothing for it (fairness
+	// rule: integrity is on only in coldstart, fault, and the correctness pass —
+	// design §8.3). The k8s-proto-bench harness flips these on for -modes=
+	// correctness (§9.4) by patching the Deployment args and waiting for rollout.
+	integrity := flag.Bool("integrity", false, "stamp request_wire_bytes + request_sha256 over the received wire (design §9.4)")
+	validate := flag.Bool("validate", false, "protovalidate each decoded request; reject violations (design §9.4)")
 	flag.Parse()
 
 	buses := busConfig{
@@ -67,7 +73,7 @@ func main() {
 		valkeySentinels: *valkeySentinels, valkeyPass: os.Getenv("VALKEY_PASSWORD"),
 		mqtt: *mqttAddr,
 	}
-	if err := run(*region, *grpcAddr, *metricsAddr, *codecName, *poolName, buses); err != nil {
+	if err := run(*region, *grpcAddr, *metricsAddr, *codecName, *poolName, *integrity, *validate, buses); err != nil {
 		log.Fatalf("region-agent: %v", err)
 	}
 }
@@ -84,7 +90,7 @@ type busConfig struct {
 	mqtt            string
 }
 
-func run(region, grpcAddr, metricsAddr, codecName, poolName string, buses busConfig) error {
+func run(region, grpcAddr, metricsAddr, codecName, poolName string, integrity, validate bool, buses busConfig) error {
 	cdc, err := codec.ByName(codecName)
 	if err != nil {
 		return err
@@ -93,7 +99,7 @@ func run(region, grpcAddr, metricsAddr, codecName, poolName string, buses busCon
 	if err != nil {
 		return err
 	}
-	opts := transport.Options{Codec: cdc, Pool: mode.NewBufferPool(), Region: region}
+	opts := transport.Options{Codec: cdc, Pool: mode.NewBufferPool(), Region: region, Integrity: integrity, Validate: validate}
 
 	// Metrics: build the provider (Go runtime + process collectors + latency
 	// buckets) without its own server, then serve /metrics and /healthz together.
