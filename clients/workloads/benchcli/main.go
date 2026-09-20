@@ -48,8 +48,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "benchcli %s: %v\n", os.Args[1], err)
 			os.Exit(1)
 		}
-	case "clockprobe", "report":
-		fmt.Fprintf(os.Stderr, "benchcli %s: not yet implemented (see docs/protobuf-grpc-benchmark-design.md phase P4)\n", os.Args[1])
+	case "correctness":
+		if err := runCorrectness(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "benchcli correctness:", err)
+			os.Exit(1)
+		}
+	case "clockprobe":
+		if err := runClockProbe(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "benchcli clockprobe:", err)
+			os.Exit(1)
+		}
+	case "report":
+		fmt.Fprintf(os.Stderr, "benchcli report: not yet implemented (results.md renderer arrives with the k8s-proto-bench harness, phase P4b)\n")
 		os.Exit(2)
 	default:
 		usage()
@@ -58,8 +68,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: benchcli <codec|grpc|nats|rabbitmq|valkey|mqtt|clockprobe|report> [flags]")
-	fmt.Fprintln(os.Stderr, "  codec  in-process codec/pool loop and schema demos (--sizes, --validate-demo, --antipattern)")
+	fmt.Fprintln(os.Stderr, "usage: benchcli <codec|grpc|nats|rabbitmq|valkey|mqtt|correctness|clockprobe|report> [flags]")
+	fmt.Fprintln(os.Stderr, "  codec        in-process codec/pool loop and schema demos (--sizes, --validate-demo, --antipattern)")
+	fmt.Fprintln(os.Stderr, "  grpc|nats|…  transport latency loop against a region-agent")
+	fmt.Fprintln(os.Stderr, "  correctness  assert codec round-trip + validation (+ live transport with -transport); the §9.4 gate")
+	fmt.Fprintln(os.Stderr, "  clockprobe   NTP-style clock-offset estimate against a region-agent (-json for the harness)")
 }
 
 func runCodec(args []string) error {
