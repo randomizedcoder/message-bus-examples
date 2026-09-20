@@ -40,10 +40,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "benchcli grpc:", err)
 			os.Exit(1)
 		}
-	case "nats", "jetstream", "rabbitmq", "quorum", "valkey", "stream", "mqtt":
+	case "nats", "jetstream", "rabbitmq", "quorum", "valkey", "stream", "mqtt", "logs":
 		run := map[string]func([]string) error{
 			"nats": runNATS, "jetstream": runJetStream, "rabbitmq": runRabbitMQ,
 			"quorum": runQuorum, "valkey": runValkey, "stream": runStream, "mqtt": runMQTT,
+			"logs": runLogsFanout,
 		}[os.Args[1]]
 		if err := run(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "benchcli %s: %v\n", os.Args[1], err)
@@ -71,12 +72,13 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: benchcli <codec|grpc|nats|jetstream|rabbitmq|quorum|valkey|stream|mqtt|correctness|clockprobe|report> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: benchcli <codec|grpc|nats|jetstream|rabbitmq|quorum|valkey|stream|mqtt|logs|correctness|clockprobe|report> [flags]")
 	fmt.Fprintln(os.Stderr, "  codec        in-process codec/pool loop and schema demos (--sizes, --validate-demo, --antipattern)")
 	fmt.Fprintln(os.Stderr, "  grpc|nats|…  transport run-mode loop against a region-agent (-mode latency|windowed|openloop|saturation|coldstart; §8.2)")
 	fmt.Fprintln(os.Stderr, "  jetstream    NATS JetStream durable telemetry publish→ack loop (tier B, one-way; -mode latency)")
 	fmt.Fprintln(os.Stderr, "  quorum       RabbitMQ quorum-queue durable telemetry publish→confirm loop (tier B, one-way; -mode latency)")
 	fmt.Fprintln(os.Stderr, "  stream       Valkey stream durable telemetry XADD loop (tier B, one-way; -mode latency)")
+	fmt.Fprintln(os.Stderr, "  logs         NATS JetStream logs fan-out: publish→ack while N ephemeral push subscribers each receive every chunk (§3.9; -mode latency)")
 	fmt.Fprintln(os.Stderr, "  correctness  assert codec round-trip + validation (+ live transport with -transport); the §9.4 gate")
 	fmt.Fprintln(os.Stderr, "  clockprobe   NTP-style clock-offset estimate against a region-agent (-json for the harness)")
 	fmt.Fprintln(os.Stderr, "  report       render run.json → results.tsv + results.md (-run <run.json>)")
