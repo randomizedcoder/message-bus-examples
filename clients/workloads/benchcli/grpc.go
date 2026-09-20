@@ -47,6 +47,10 @@ func runGRPC(args []string) error {
 	metricsAddr := fs.String("metrics-addr", "", "serve /metrics here (empty = off)")
 	validate := fs.Bool("validate", false, "protovalidate each response")
 	timeout := fs.Duration("timeout", 5*time.Second, "per-request timeout")
+	gc := fs.String("gc", "default", "gc profile label for the cell id (default|limit)")
+	repeat := fs.Int("repeat", 0, "repeat index for the emitted cell record")
+	out := fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)")
+	hgrm := fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -90,7 +94,7 @@ func runGRPC(args []string) error {
 	}
 	cell := harness.Cell{
 		Transport: "grpc_unary", Codec: *codecName, Fixture: *fixtureName, Pool: mode.String(),
-		Mode: "latency", Region: *region, Role: "client", Tier: "rpc",
+		GC: *gc, Mode: "latency", Region: *region, Role: "client", Tier: "rpc",
 	}
 	ctx := context.Background()
 	inst.SetActiveCell(ctx, cell, true)
@@ -98,7 +102,7 @@ func runGRPC(args []string) error {
 
 	resp := newResp()
 	env := req.(hasEnvelope).GetEnvelope()
-	var lat harness.Latencies
+	lat := harness.NewHDR()
 	start := time.Now()
 	for i := 0; i < *n; i++ {
 		if err := envelope.Fill(env, *runID, uint64(i), codecEnum, workloadsv1.Transport_TRANSPORT_GRPC_UNARY, *fixtureName); err != nil {
@@ -112,7 +116,7 @@ func runGRPC(args []string) error {
 		cancel()
 		inst.Message(ctx, cell, harness.ResultSent)
 		if err != nil {
-			lat.AddError()
+			lat.AddErrorKind("transport")
 			inst.Error(ctx, cell, "transport")
 			if lat.NumErrors() <= 3 {
 				fmt.Fprintf(os.Stderr, "request %d: %v\n", i, err)
@@ -121,11 +125,11 @@ func runGRPC(args []string) error {
 		}
 		inst.Message(ctx, cell, harness.ResultReceived)
 		inst.RTT(ctx, cell, rtt)
-		lat.Add(rtt)
+		lat.Record(rtt)
 	}
 	elapsed := time.Since(start)
 	printGRPCSummary(*addr, cell, lat.Summarize(elapsed), elapsed)
-	return nil
+	return emitCell(emitOptions{out: *out, hgrm: *hgrm, repeat: *repeat}, cell, lat, elapsed, wireLen(cdc, req), 1, 0)
 }
 
 // grpcPair returns the request message for the fixture and a constructor for a

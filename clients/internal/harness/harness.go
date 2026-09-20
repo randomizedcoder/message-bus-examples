@@ -11,7 +11,6 @@ package harness
 
 import (
 	"context"
-	"sort"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -172,18 +171,6 @@ func (in *Instruments) SetActiveCell(ctx context.Context, c Cell, on bool) {
 	in.cellInfo.Record(ctx, v, c.option().base)
 }
 
-// Latencies accumulates RTTs for one cell and reports exact percentiles from
-// the sorted samples. HDR histograms (design §8) replace this in P4 for the
-// full matrix; for a single latency cell an exact sort is simpler and correct.
-type Latencies struct {
-	samples []time.Duration
-	errors  int
-}
-
-func (l *Latencies) Add(d time.Duration) { l.samples = append(l.samples, d) }
-func (l *Latencies) AddError()           { l.errors++ }
-func (l *Latencies) NumErrors() int      { return l.errors }
-
 // Summary is the reduced view of a latency cell.
 type Summary struct {
 	Count            int
@@ -194,38 +181,6 @@ type Summary struct {
 	ThroughputPerSec float64
 }
 
-// Summarize sorts the samples and computes the summary over elapsed wall time.
-func (l *Latencies) Summarize(elapsed time.Duration) Summary {
-	s := Summary{Count: len(l.samples), Errors: l.errors}
-	if len(l.samples) == 0 {
-		return s
-	}
-	sort.Slice(l.samples, func(i, j int) bool { return l.samples[i] < l.samples[j] })
-	var sum time.Duration
-	for _, d := range l.samples {
-		sum += d
-	}
-	s.Min = l.samples[0]
-	s.Max = l.samples[len(l.samples)-1]
-	s.Mean = sum / time.Duration(len(l.samples))
-	s.P50 = l.pct(0.50)
-	s.P90 = l.pct(0.90)
-	s.P99 = l.pct(0.99)
-	s.P999 = l.pct(0.999)
-	if elapsed > 0 {
-		s.ThroughputPerSec = float64(len(l.samples)) / elapsed.Seconds()
-	}
-	return s
-}
-
-// pct returns the p-quantile using nearest-rank on the already-sorted samples.
-func (l *Latencies) pct(p float64) time.Duration {
-	if len(l.samples) == 0 {
-		return 0
-	}
-	i := int(p * float64(len(l.samples)))
-	if i >= len(l.samples) {
-		i = len(l.samples) - 1
-	}
-	return l.samples[i]
-}
+// Summaries are produced by HDR.Summarize (hdr.go); the exact-sort accumulator
+// this package shipped in P2 was replaced by the HDR histogram in P4b (design
+// §8).
