@@ -105,6 +105,11 @@ in
       "ip_vs_wrr"
       "ip_vs_sh"
       "nf_conntrack"
+      # KVM PTP clock: exposes the host clock to the guest as /dev/ptp0 so
+      # chrony can discipline the VM clock to < 10 µs (proto-bench §8.1). A
+      # µs-quality clock is what makes one-way latency (not just RTT)
+      # meaningful; see the chrony block below.
+      "ptp_kvm"
     ];
 
     boot.kernel.sysctl = {
@@ -112,6 +117,26 @@ in
       "net.ipv6.conf.all.forwarding" = 1;
       "net.bridge.bridge-nf-call-iptables" = 1;
       "net.bridge.bridge-nf-call-ip6tables" = 1;
+    };
+
+    # ─── µs-quality clock (chrony + KVM PHC) ─────────────────────────
+    # The default systemd-timesyncd against a network NTP source drifts by
+    # hundreds of µs to milliseconds — fine for RTT, but our LAN one-way p50
+    # is only ~100–300 µs, so one-way latency needs a far tighter clock
+    # (proto-bench §8.1). The `ptp_kvm` module above surfaces the host clock
+    # as /dev/ptp0; chrony disciplines the guest to it (usually < 10 µs).
+    # timesyncd is disabled so the two do not fight over the system clock.
+    services.timesyncd.enable = false;
+    services.chrony = {
+      enable = true;
+      # PHC is the sole reference — no network NTP servers. `poll 2 dpoll -2
+      # offset 0` reads the KVM PHC frequently and trusts it directly (it is
+      # the host's own clock, already in the guest's UTC domain).
+      servers = [ ];
+      extraConfig = ''
+        refclock PHC /dev/ptp0 poll 2 dpoll -2 offset 0
+        makestep 1.0 3
+      '';
     };
 
     # ─── PKI directory ────────────────────────────────────────────────
