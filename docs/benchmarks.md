@@ -11,9 +11,11 @@ Two complementary ways to benchmark the message-bus clients:
    Prometheus.
 
 A third track — Protobuf/ProtoJSON codecs over gRPC and the buses with a
-`sync.Pool` allocation strategy — is designed in
-[protobuf-grpc-benchmark-design.md](protobuf-grpc-benchmark-design.md); it uses
-the `proto-bench` / `workloads` names so it does not collide with the two above.
+`sync.Pool` allocation strategy — is specified in
+[protobuf-grpc-benchmark-design.md](protobuf-grpc-benchmark-design.md) and driven
+by the `k8s-proto-bench` harness; see [proto-bench.md](proto-bench.md) for the
+operator guide. It uses the `proto-bench` / `workloads` names so it does not
+collide with the two above.
 
 ## Micro-benchmarks
 
