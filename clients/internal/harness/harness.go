@@ -117,6 +117,12 @@ const (
 	ResultReceived = "received"
 	ResultOK       = "ok"
 	ResultError    = "error"
+	// ResultRedelivered marks an at-least-once delivery the broker sent more than
+	// once (JetStream NumDelivered > 1, RabbitMQ redelivered flag, Valkey pending
+	// re-read). Recorded in addition to received/ok so the tier-B redelivery rate
+	// shows on the dashboard's messages-by-result panel without a new instrument
+	// (design §2.3, §8.4).
+	ResultRedelivered = "redelivered"
 )
 
 // direction label values for the *_bytes / one_way instruments.

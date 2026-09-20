@@ -182,6 +182,18 @@ func (a *agent) startBuses(ctx context.Context, opts transport.Options, b busCon
 			r := natstransport.NewResponder(nc, opts, a.responderID, a.region, newDeployReq)
 			go a.serve("nats", r, opts)
 			log.Printf("nats responder: %s on %s", b.nats, natstransport.DeploySubject(a.region))
+			// JetStream durable telemetry consumer for this region (tier B, §3.9).
+			// EnsureStream is idempotent across all agents; a failure here is
+			// logged, not fatal — the request-reply responder still serves.
+			if js, err := natstransport.JetStream(nc); err != nil {
+				log.Printf("nats: jetstream context: %v", err)
+			} else if err := natstransport.EnsureStream(js); err != nil {
+				log.Printf("nats: ensure stream %s: %v", natstransport.StreamName, err)
+			} else {
+				cons := natstransport.NewConsumer(js, opts, a.region)
+				go a.consumeJetStream(ctx, cons, opts)
+				log.Printf("nats jetstream consumer: stream %s subject %s", natstransport.StreamName, natstransport.TelemetrySubject(a.region))
+			}
 		}
 	}
 	if b.amqp != "" {
@@ -237,6 +249,32 @@ func (a *agent) consumeTelemetry(ctx context.Context, cons transport.Consumer, o
 	})
 	if err != nil {
 		log.Printf("mqtt: consume: %v", err)
+	}
+}
+
+// consumeJetStream decodes each durable telemetry delivery, records the
+// role=server counters, and acks it explicitly (tier B: acked after the agent
+// has taken it — design §2.3). A redelivery (NumDelivered > 1) is counted so the
+// dashboard shows the tier-B redelivery rate; a decode/validate failure is still
+// acked (a poison message must not redeliver forever) but counted as an error.
+func (a *agent) consumeJetStream(ctx context.Context, cons transport.Consumer, opts transport.Options) {
+	err := cons.Consume(ctx, func(m transport.Msg) error {
+		req, derr := natstransport.Decode(m, newTelemetry, a.responderID, opts)
+		cell := a.cell(envelope.Of(req))
+		a.inst.Message(ctx, cell, harness.ResultReceived)
+		if natstransport.Redelivered(m) {
+			a.inst.Message(ctx, cell, harness.ResultRedelivered)
+		}
+		if derr != nil {
+			a.inst.Error(ctx, cell, "validate")
+			_ = m.Ack() // drop the poison message rather than redeliver it forever
+			return nil
+		}
+		a.inst.Message(ctx, cell, harness.ResultOK)
+		return m.Ack()
+	})
+	if err != nil {
+		log.Printf("nats jetstream: consume: %v", err)
 	}
 }
 

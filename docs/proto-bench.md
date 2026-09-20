@@ -73,8 +73,9 @@ core list for the driver), `--integrity` (`none|sha256`), `--log-dir`
 
 ## Run modes
 
-Every request/reply transport supports every mode except where noted; MQTT is
-one-way telemetry and is latency-only. See design §8.2/§8.4.
+Every request/reply transport supports every mode except where noted; the
+one-way telemetry drivers (`mqtt` fire-and-forget, `jetstream` durable) are
+latency-only. See design §8.2/§8.4.
 
 | Mode | Shape | Headline output |
 |------|-------|-----------------|
@@ -102,6 +103,14 @@ report shows what it can measure.
 - `grpc` / `nats` / `rabbitmq` / `valkey` / `mqtt` — the transport drivers (the
   harness invokes these; each takes `-mode`, `-codec`, `-fixture`, `-pool`,
   `-rate`/`-duration`/`-count`/`-inflight`, `-out`/`-hgrm`, …).
+- `jetstream` — the NATS JetStream **durable telemetry** driver (tier B): a
+  one-way `publish→persist-ack` loop on `wl.<region>.telemetry`, backed by the
+  R3 file stream `WL_TELEMETRY`. Each publish blocks until JetStream acks the
+  message as replicated, so its latency is the durable-write cost (contrast
+  `mqtt`'s fire-and-forget). Delivery + redelivery are consumer-side: the
+  region-agent runs a durable pull consumer per region, acks every message, and
+  records `mbbench_messages_total{role="server",result="redelivered"}` for any
+  `NumDelivered > 1` (design §2.3 tier B, §3.9).
 - `correctness` — the §9.4 pass: in-process `proto.Equal` per codec×fixture,
   corpus determinism, protovalidate valid/invalid, and (over `-transport`) a
   live round trip asserting the `message_id` echo.

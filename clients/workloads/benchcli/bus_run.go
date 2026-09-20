@@ -178,6 +178,75 @@ func runMQTT(args []string) error {
 	return emitCell(f.emit(), br.cell, cellResult{hdr: lat, elapsed: elapsed, wireReq: wireLen(br.opts.Codec, sample), inflight: 1})
 }
 
+// runJetStream drives the NATS JetStream durable telemetry publish loop (tier B,
+// design §3.9). Each Publish blocks until JetStream acks the message as persisted
+// to the R3 file stream, so the reported latency is publish→persist-ack — the
+// durable-write cost that separates tier B from MQTT's fire-and-forget. There is
+// no reply; end-to-end delivery + redelivery counts are a consumer-side property
+// verified agent-side (mbbench_messages_total{role="server"}, §8.4).
+func runJetStream(args []string) error {
+	f := newBusFlags("jetstream", "127.0.0.1:30422", "telemetry")
+	if err := f.fs.Parse(args); err != nil {
+		return err
+	}
+	if *f.mode != modeLatency {
+		return fmt.Errorf("jetstream is a durable publish loop; only -mode=latency is supported (got %q)", *f.mode)
+	}
+	br, err := f.setup("nats_jetstream", workloadsv1.Transport_TRANSPORT_NATS_JETSTREAM)
+	if err != nil {
+		return err
+	}
+	nc, err := natstransport.Dial("nats://" + *f.addr)
+	if err != nil {
+		return fmt.Errorf("nats connect %s: %w", *f.addr, err)
+	}
+	defer nc.Close()
+	js, err := natstransport.JetStream(nc)
+	if err != nil {
+		return fmt.Errorf("jetstream context: %w", err)
+	}
+	if err := natstransport.EnsureStream(js); err != nil {
+		return fmt.Errorf("ensure stream %s: %w", natstransport.StreamName, err)
+	}
+	pub := natstransport.NewPublisher(js, br.opts, *f.region)
+	defer pub.Close()
+
+	ctx := context.Background()
+	br.inst.SetActiveCell(ctx, br.cell, true)
+	defer br.inst.SetActiveCell(ctx, br.cell, false)
+	sample := br.corpus.Telemetry(3)
+	env := sample.GetEnvelope()
+	lat := harness.NewHDR()
+	start := time.Now()
+	for i := 0; i < *f.n; i++ {
+		if err := envelope.Fill(env, *f.runID, uint64(i), br.cenum, br.tenum, "telemetry"); err != nil {
+			lat.AddErrorKind("encode")
+			continue
+		}
+		pctx, cancel := context.WithTimeout(ctx, *f.timeout)
+		t0 := time.Now()
+		rel, err := pub.Publish(pctx, sample)
+		d := time.Since(t0)
+		cancel()
+		br.inst.Message(ctx, br.cell, harness.ResultSent)
+		if err != nil {
+			lat.AddErrorKind("transport")
+			br.inst.Error(ctx, br.cell, "transport")
+			if lat.NumErrors() <= 3 {
+				fmt.Fprintf(os.Stderr, "publish %d: %v\n", i, err)
+			}
+			continue
+		}
+		rel()
+		br.inst.Message(ctx, br.cell, harness.ResultOK)
+		br.inst.RTT(ctx, br.cell, d)
+		lat.Record(d)
+	}
+	elapsed := time.Since(start)
+	printBusSummary("jetstream (publish→ack)", *f.addr, br.cell, lat.Summarize(elapsed), elapsed)
+	return emitCell(f.emit(), br.cell, cellResult{hdr: lat, elapsed: elapsed, wireReq: wireLen(br.opts.Codec, sample), inflight: 1})
+}
+
 // runAndPrint runs the configured run mode over the request/reply Requester,
 // prints the summary, and (when the harness passed -out/-hgrm) emits the
 // per-cell record + histogram (design §8.2). dial is the fresh-connection
