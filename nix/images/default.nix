@@ -99,6 +99,28 @@ let
       contents = with pkgs; [ busybox prometheus-redis-exporter ];
     };
 
+    # ─── Mosquitto $SYS → Prometheus sidecar ───────────────────────────
+    # Built from our own Go module (like region-agent), not a nixpkgs package —
+    # mosquitto has no upstream exporter (design §11.5). Connects to the broker
+    # over plain localhost TCP, so no cacert is needed in the closure.
+    mosquitto-sysexporter = mkImage {
+      name = mon.mosquittoExporter.image;
+      tag  = mon.mosquittoExporter.tag;
+      contents = [
+        pkgs.busybox
+        (import ../lib/mkGoBinary.nix { inherit pkgs versions; } {
+          pname = "sysexporter";
+          subPackage = "mqtt/sysexporter";
+          version = mon.mosquittoExporter.tag;
+        })
+      ];
+      config = {
+        Entrypoint = [ "/bin/sysexporter" ];
+        Env = [ "PATH=/bin" ];
+        ExposedPorts = { "${toString mon.mosquittoExporter.port}/tcp" = { }; };
+      };
+    };
+
     # ─── proto-bench region-agent ──────────────────────────────────────
     # The one image built from our own Go module (design §9.1). Defined in
     # its own file since it also needs mkGoBinary + versions.
@@ -116,6 +138,7 @@ let
     { name = mon.natsExporter.image; tag = mon.natsExporter.tag; archive = images.prometheus-nats-exporter; }
     { name = mon.grafana.image;      tag = mon.grafana.tag;      archive = images.grafana; }
     { name = mon.redisExporter.image; tag = mon.redisExporter.tag; archive = images.prometheus-redis-exporter; }
+    { name = mon.mosquittoExporter.image; tag = mon.mosquittoExporter.tag; archive = images.mosquitto-sysexporter; }
     { name = mb.workloads.image; tag = mb.workloads.tag; archive = images.region-agent; }
   ];
 in

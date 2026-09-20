@@ -17,6 +17,7 @@
 let
   constants = import ../../constants.nix;
   c = constants.messageBus.mqtt;
+  mon = constants.monitoring;
   ns = c.namespace;
   fqdn = "mqtt-headless.${ns}.svc.${constants.k8s.clusterDomain}";
 in
@@ -188,6 +189,29 @@ in
                   limits:
                     cpu: 250m
                     memory: 256Mi
+              # $SYS → Prometheus bridge, co-located per pod (design §11.5).
+              # Subscribes to this broker's own $SYS tree over localhost —
+              # $SYS is broker-local (never bridged), so per-pod scraping gives
+              # per-broker stats. No readinessProbe: it must never gate the
+              # broker's own client readiness (mirrors the NATS exporter).
+              - name: sysexporter
+                image: ${mon.mosquittoExporter.image}:${mon.mosquittoExporter.tag}
+                imagePullPolicy: Never
+                args:
+                - "-addr"
+                - "localhost:${toString c.mqttPort}"
+                - "-metrics-addr"
+                - ":${toString mon.mosquittoExporter.port}"
+                ports:
+                - containerPort: ${toString mon.mosquittoExporter.port}
+                  name: metrics
+                resources:
+                  requests:
+                    cpu: 25m
+                    memory: 32Mi
+                  limits:
+                    cpu: 200m
+                    memory: 64Mi
               volumes:
               - name: config
                 configMap:

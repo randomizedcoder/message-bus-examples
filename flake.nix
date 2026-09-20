@@ -165,6 +165,7 @@
             prometheus-nats-exporter-image = busImagesMod.images.prometheus-nats-exporter;
             grafana-image                 = busImagesMod.images.grafana;
             prometheus-redis-exporter-image = busImagesMod.images.prometheus-redis-exporter;
+            mosquitto-sysexporter-image     = busImagesMod.images.mosquitto-sysexporter;
             # proto-bench region-agent (first Nix-built Go-binary image).
             region-agent-image            = busImagesMod.images.region-agent;
           }
