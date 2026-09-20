@@ -74,13 +74,17 @@ spec:
           mountPath: /etc/prometheus
         - name: data
           mountPath: /data
+        # 1Gi crash-looped: after ~26h the TSDB head block (now also
+        # carrying the workloads-agents series) crossed 1Gi and every
+        # restart then OOMed replaying that head within ~8s. 2Gi gives
+        # replay + the extra cardinality ~2x headroom on cp0's ~7.7Gi.
         resources:
           requests:
             cpu: 100m
-            memory: 256Mi
+            memory: 512Mi
           limits:
             cpu: '1'
-            memory: 1Gi
+            memory: 2Gi
       volumes:
       - name: config
         configMap:
