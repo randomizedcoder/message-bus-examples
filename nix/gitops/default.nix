@@ -31,6 +31,9 @@ let
   # Observability (in-cluster Prometheus + Grafana + NATS exporter)
   monitoring = import (envDir + "/monitoring.nix") { inherit pkgs lib; };
 
+  # proto-bench region agents (gRPC in P2; bus responders in P3)
+  workloads = import (envDir + "/workloads.nix") { inherit pkgs lib; };
+
   # Combine all manifests
   allManifests = base.manifests ++ argocd.manifests ++ cilium.manifests
     ++ storage.manifests
@@ -38,7 +41,8 @@ let
     ++ rabbitmq.manifests
     ++ mqtt.manifests
     ++ valkey.manifests
-    ++ monitoring.manifests;
+    ++ monitoring.manifests
+    ++ workloads.manifests;
 
   emitStep = m:
     if m ? source then ''

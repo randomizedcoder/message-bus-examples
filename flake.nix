@@ -101,12 +101,14 @@
         gitops = import (nixDir + "/gitops") { inherit pkgs lib; };
         k8sManifests = gitops.packages.k8s-manifests;
 
-        # Nix-built message-bus OCI images (preloaded into containerd).
-        busImagesMod = import (nixDir + "/images") { inherit pkgs lib; };
-        busImages = busImagesMod.imageList;
-
         # Toolchain + content-hash single source of truth (design §5).
         versions = import (nixDir + "/versions.nix") { inherit pkgs; };
+
+        # Nix-built message-bus OCI images (preloaded into containerd). Passes
+        # `versions` because the region-agent image builds a Go binary from the
+        # shared clients module.
+        busImagesMod = import (nixDir + "/images") { inherit pkgs lib versions; };
+        busImages = busImagesMod.imageList;
 
         # Proto tooling: buf module cache (FOD), gen-drift/lint/breaking checks,
         # and the impure regen-protos app.
@@ -163,6 +165,8 @@
             prometheus-nats-exporter-image = busImagesMod.images.prometheus-nats-exporter;
             grafana-image                 = busImagesMod.images.grafana;
             prometheus-redis-exporter-image = busImagesMod.images.prometheus-redis-exporter;
+            # proto-bench region-agent (first Nix-built Go-binary image).
+            region-agent-image            = busImagesMod.images.region-agent;
           }
           # Go pub/sub CLI clients (all four binaries in one derivation).
           // { message-bus-clients = clients.package; }

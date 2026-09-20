@@ -19,20 +19,18 @@
 #   du -h ./result               # compressed layer tar size
 # ).
 #
-{ pkgs, lib }:
+# `versions` (default-imported) is needed only by the region-agent image, which
+# builds a Go binary from the shared `clients` module; the bus/observability
+# images wrap nixpkgs packages and don't use it.
+{ pkgs, lib, versions ? import ../versions.nix { inherit pkgs; } }:
 let
   constants = import ../constants.nix;
   mb = constants.messageBus;
   mon = constants.monitoring;
 
-  mkImage = { name, tag, contents, config ? { } }:
-    pkgs.dockerTools.buildLayeredImage {
-      inherit name tag;
-      inherit contents;
-      config = {
-        Env = [ "PATH=/bin" ];
-      } // config;
-    };
+  # Shared layered-image builder (nix/images/lib.nix), also used by
+  # region-agent.nix.
+  mkImage = (import ./lib.nix { inherit pkgs; }).mkImage;
 
   images = {
     # busybox gives a tiny static /bin/sh + coreutils applets for the
@@ -100,6 +98,11 @@ let
       tag  = mon.redisExporter.tag;
       contents = with pkgs; [ busybox prometheus-redis-exporter ];
     };
+
+    # ─── proto-bench region-agent ──────────────────────────────────────
+    # The one image built from our own Go module (design §9.1). Defined in
+    # its own file since it also needs mkGoBinary + versions.
+    region-agent = import ./region-agent.nix { inherit pkgs lib versions; };
   };
 
   # Flat list the preload module + microvm generator consume.
@@ -113,6 +116,7 @@ let
     { name = mon.natsExporter.image; tag = mon.natsExporter.tag; archive = images.prometheus-nats-exporter; }
     { name = mon.grafana.image;      tag = mon.grafana.tag;      archive = images.grafana; }
     { name = mon.redisExporter.image; tag = mon.redisExporter.tag; archive = images.prometheus-redis-exporter; }
+    { name = mb.workloads.image; tag = mb.workloads.tag; archive = images.region-agent; }
   ];
 in
 {

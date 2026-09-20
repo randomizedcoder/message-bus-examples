@@ -25,12 +25,66 @@ import (
 	"unicode"
 
 	promclient "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/attribute"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
+
+// LatencyBucketsView gives every histogram whose instrument name ends in
+// "_seconds" explicit boundaries from 25 µs to 30 s (×2 per step, ≈21 buckets)
+// instead of the OTel SDK defaults (0, 5, 10, 25 …), whose coarsest sub-5 s
+// bucket makes any p99 below 5 s interpolated noise. The proto-bench mbbench_*
+// / mbclient_* histograms all measure sub-second LAN latencies, so this is the
+// difference between a real p99 and a flat line (design §11.1, rule 10). HDR
+// files remain the source of exact percentiles; Prometheus is for trends and
+// cross-party correlation.
+var LatencyBucketsView = sdkmetric.NewView(
+	sdkmetric.Instrument{Name: "*_seconds", Kind: sdkmetric.InstrumentKindHistogram},
+	sdkmetric.Stream{Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
+		Boundaries: []float64{
+			25e-6, 50e-6, 100e-6, 200e-6, 400e-6, 800e-6,
+			1.6e-3, 3.2e-3, 6.4e-3, 12.8e-3, 25.6e-3, 51.2e-3,
+			0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 30,
+		},
+	}},
+)
+
+// NewProvider builds the OTel MeterProvider + Prometheus registry the
+// proto-bench driver and region-agent record through, registers the Go runtime
+// and process collectors (the pooling / GC proof — bytes-allocated-per-message,
+// GC CPU fraction, heap plateau; design §11.2–§11.3), applies LatencyBucketsView
+// plus any caller views, and serves /metrics on addr. It is the richer sibling
+// of Setup (unchanged): Setup drives the soak clients' tiny recorder,
+// NewProvider drives the benchmark's full runtime introspection.
+//
+// The registry is returned so a test can scrape it directly. addr "" starts no
+// server (meters still work, nothing is exposed) — the harness passes a real addr.
+func NewProvider(addr string, views ...sdkmetric.View) (*sdkmetric.MeterProvider, *promclient.Registry, error) {
+	reg := promclient.NewRegistry()
+	reg.MustRegister(
+		collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(
+			collectors.MetricsGC, collectors.MetricsMemory, collectors.MetricsScheduler,
+		)),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	exp, err := otelprom.New(otelprom.WithRegisterer(reg))
+	if err != nil {
+		return nil, nil, fmt.Errorf("prometheus exporter: %w", err)
+	}
+	views = append(views, LatencyBucketsView)
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exp), sdkmetric.WithView(views...))
+
+	if addr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		go func() { _ = srv.ListenAndServe() }()
+	}
+	return mp, reg, nil
+}
 
 // Recorder is the tiny surface the clients record through. Setup returns a
 // live *Metrics; Nop{} is the do-nothing default when metrics are disabled.

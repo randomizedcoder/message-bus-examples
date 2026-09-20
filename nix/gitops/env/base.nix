@@ -45,6 +45,11 @@ in
         kind: Namespace
         metadata:
           name: ${constants.monitoring.namespace}
+        ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${constants.messageBus.workloads.namespace}
       '';
     }
     {

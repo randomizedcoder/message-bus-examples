@@ -27,6 +27,8 @@ let
   natsC = constants.messageBus.nats;
   rmqC  = constants.messageBus.rabbitmq;
   vkC   = constants.messageBus.valkey;
+  wlC   = constants.messageBus.workloads;
+  pb    = constants.protoBench;
   cp0Host = constants.getHostname "cp0";
 
   # Provisioned Prometheus datasource uid — referenced by the soak dashboard
@@ -68,6 +70,20 @@ let
   redisTargets = mkTargets (map
     (i: "valkey-${toString i}.valkey-headless.${vkC.namespace}.${domain}:${toString mon.redisExporter.port}")
     (lib.range 0 (vkC.replicas - 1)));
+
+  # proto-bench region agents — one pod per region, each addressable by a
+  # stable DNS name via the headless `region-agents` Service (hostname +
+  # subdomain on the Deployment pods). Scraped per-pod on the metrics port.
+  workloadsTargets = mkTargets (map
+    (node: "region-agent-${wlC.regions.${node}}.region-agents.${wlC.namespace}.${domain}:${toString wlC.metricsPort}")
+    constants.nodeNames);
+
+  # proto-bench host driver(s): hostBridgeIP:(base+0 .. base+count-1), one port
+  # per concurrent benchcli process. Absent ones just show DOWN (like the soak
+  # client range), so the harness can fill them as it launches drivers.
+  driverTargets = mkTargets (map
+    (i: "${mon.hostBridgeIP}:${toString (pb.hostMetricsBasePort + i)}")
+    (lib.range 0 (pb.hostMetricsCount - 1)));
 
   # ─── Community Grafana dashboards (grafana.com) ────────────────────────
   # Each is fetched at build time with fetchurl, pinned to a specific revision
@@ -216,6 +232,25 @@ in
               - job_name: soak-clients
                 static_configs:
                   - targets: ${clientTargets}
+              # proto-bench region agents (mbbench_* role=server + Go/process
+              # collectors). Fast scrape so a 30s cell has enough samples.
+              - job_name: workloads-agents
+                scrape_interval: 5s
+                static_configs:
+                  - targets: ${workloadsTargets}
+                # Label each series with its region (from the pod DNS name,
+                # e.g. region-agent-us-east-1.region-agents...:9464).
+                metric_relabel_configs:
+                  - source_labels: [instance]
+                    regex: 'region-agent-([^.]+)\..*'
+                    target_label: agent_region
+                    replacement: '$1'
+              # proto-bench host driver(s): benchcli OTel /metrics over the
+              # k8sbr0 bridge (mbbench_* role=client).
+              - job_name: proto-bench-driver
+                scrape_interval: 5s
+                static_configs:
+                  - targets: ${driverTargets}
       '';
     }
 
