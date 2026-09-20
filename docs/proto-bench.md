@@ -74,8 +74,8 @@ core list for the driver), `--integrity` (`none|sha256`), `--log-dir`
 ## Run modes
 
 Every request/reply transport supports every mode except where noted; the
-one-way telemetry drivers (`mqtt` fire-and-forget, `jetstream` durable) are
-latency-only. See design §8.2/§8.4.
+one-way telemetry drivers (`mqtt` fire-and-forget, `jetstream`/`quorum` durable)
+are latency-only. See design §8.2/§8.4.
 
 | Mode | Shape | Headline output |
 |------|-------|-----------------|
@@ -111,6 +111,14 @@ report shows what it can measure.
   region-agent runs a durable pull consumer per region, acks every message, and
   records `mbbench_messages_total{role="server",result="redelivered"}` for any
   `NumDelivered > 1` (design §2.3 tier B, §3.9).
+- `quorum` — the RabbitMQ **quorum-queue durable telemetry** driver (tier B): a
+  one-way `publish→confirm` loop to the durable quorum queue
+  `wl.telemetry.<region>` (`x-queue-type: quorum`), persistent delivery +
+  publisher confirms. Each publish blocks until the broker confirms the message
+  committed to the quorum (Raft-replicated across the RabbitMQ nodes). The
+  region-agent consumes its own region's queue with manual ack, acks every
+  message, and records `result="redelivered"` for the AMQP redelivered flag
+  (design §2.3 tier B, §3.9).
 - `correctness` — the §9.4 pass: in-process `proto.Equal` per codec×fixture,
   corpus determinism, protovalidate valid/invalid, and (over `-transport`) a
   live round trip asserting the `message_id` echo.

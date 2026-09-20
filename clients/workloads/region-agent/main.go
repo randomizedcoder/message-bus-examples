@@ -199,11 +199,22 @@ func (a *agent) startBuses(ctx context.Context, opts transport.Options, b busCon
 	if b.amqp != "" {
 		if conn, err := rmqtransport.Dial(b.amqp); err != nil {
 			log.Printf("rabbitmq: dial: %v", err)
-		} else if r, err := rmqtransport.NewResponder(conn, opts, a.responderID, a.region, newDeployReq); err != nil {
-			log.Printf("rabbitmq: responder: %v", err)
 		} else {
-			go a.serve("rabbitmq", r, opts)
-			log.Printf("rabbitmq responder: key %s", rmqtransport.RoutingKey(a.region))
+			if r, err := rmqtransport.NewResponder(conn, opts, a.responderID, a.region, newDeployReq); err != nil {
+				log.Printf("rabbitmq: responder: %v", err)
+			} else {
+				go a.serve("rabbitmq", r, opts)
+				log.Printf("rabbitmq responder: key %s", rmqtransport.RoutingKey(a.region))
+			}
+			// Quorum-queue durable telemetry consumer for this region (tier B,
+			// §3.9). Reuses the same connection; a failure here is logged, not
+			// fatal — the RPC responder still serves.
+			if cons, err := rmqtransport.NewConsumer(conn, opts, a.region); err != nil {
+				log.Printf("rabbitmq: quorum consumer: %v", err)
+			} else {
+				go a.consumeQuorum(ctx, cons, opts)
+				log.Printf("rabbitmq quorum consumer: queue %s", rmqtransport.TelemetryQueue(a.region))
+			}
 		}
 	}
 	if b.valkeySentinels != "" {
@@ -275,6 +286,31 @@ func (a *agent) consumeJetStream(ctx context.Context, cons transport.Consumer, o
 	})
 	if err != nil {
 		log.Printf("nats jetstream: consume: %v", err)
+	}
+}
+
+// consumeQuorum decodes each durable quorum-queue telemetry delivery, records the
+// role=server counters, and acks it (tier B — design §2.3). A redelivery (the
+// AMQP redelivered flag) is counted; a decode/validate failure is still acked (a
+// poison message must not requeue forever) but counted as an error.
+func (a *agent) consumeQuorum(ctx context.Context, cons transport.Consumer, opts transport.Options) {
+	err := cons.Consume(ctx, func(m transport.Msg) error {
+		req, derr := rmqtransport.Decode(m, newTelemetry, a.responderID, opts)
+		cell := a.cell(envelope.Of(req))
+		a.inst.Message(ctx, cell, harness.ResultReceived)
+		if rmqtransport.Redelivered(m) {
+			a.inst.Message(ctx, cell, harness.ResultRedelivered)
+		}
+		if derr != nil {
+			a.inst.Error(ctx, cell, "validate")
+			_ = m.Ack() // drop the poison message rather than requeue it forever
+			return nil
+		}
+		a.inst.Message(ctx, cell, harness.ResultOK)
+		return m.Ack()
+	})
+	if err != nil {
+		log.Printf("rabbitmq quorum: consume: %v", err)
 	}
 }
 
