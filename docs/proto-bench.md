@@ -74,8 +74,8 @@ core list for the driver), `--integrity` (`none|sha256`), `--log-dir`
 ## Run modes
 
 Every request/reply transport supports every mode except where noted; the
-one-way telemetry drivers (`mqtt` fire-and-forget, `jetstream`/`quorum` durable)
-are latency-only. See design §8.2/§8.4.
+one-way telemetry drivers (`mqtt` fire-and-forget, `jetstream`/`quorum`/`stream`
+durable) are latency-only. See design §8.2/§8.4.
 
 | Mode | Shape | Headline output |
 |------|-------|-----------------|
@@ -119,6 +119,12 @@ report shows what it can measure.
   region-agent consumes its own region's queue with manual ack, acks every
   message, and records `result="redelivered"` for the AMQP redelivered flag
   (design §2.3 tier B, §3.9).
+- `stream` — the Valkey **stream durable telemetry** driver (tier B): a one-way
+  `XADD` loop to `wl:<region>:telemetry` (`MAXLEN ~` trimmed). The region-agent
+  consumes its own region's stream through the consumer group `agents`, `XACK`s
+  every delivery, and records `result="redelivered"` for any entry re-read from
+  its pending list (a message delivered but not acked before a restart — design
+  §2.3 tier B, §3.9).
 - `correctness` — the §9.4 pass: in-process `proto.Equal` per codec×fixture,
   corpus determinism, protovalidate valid/invalid, and (over `-transport`) a
   live round trip asserting the `message_id` echo.

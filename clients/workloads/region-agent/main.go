@@ -225,6 +225,15 @@ func (a *agent) startBuses(ctx context.Context, opts transport.Options, b busCon
 			go a.serve("valkey", r, opts)
 			log.Printf("valkey responder: stream %s", valkeytransport.DeployStream(a.region))
 		}
+		// Stream durable telemetry consumer for this region (tier B, §3.9).
+		// Reuses the same client; a failure here is logged, not fatal — the RPC
+		// responder still serves.
+		if cons, err := valkeytransport.NewConsumer(rdb, opts, a.region, a.responderID); err != nil {
+			log.Printf("valkey: stream consumer: %v", err)
+		} else {
+			go a.consumeStream(ctx, cons, opts)
+			log.Printf("valkey stream consumer: stream %s group agents", valkeytransport.TelemetryStream(a.region))
+		}
 	}
 	if b.mqtt != "" {
 		if mc, err := mqtttransport.Dial(b.mqtt, "region-agent-"+a.region); err != nil {
@@ -311,6 +320,31 @@ func (a *agent) consumeQuorum(ctx context.Context, cons transport.Consumer, opts
 	})
 	if err != nil {
 		log.Printf("rabbitmq quorum: consume: %v", err)
+	}
+}
+
+// consumeStream decodes each durable stream telemetry delivery, records the
+// role=server counters, and XACKs it (tier B — design §2.3). A re-read pending
+// entry (redelivery) is counted; a decode/validate failure is still acked (a
+// poison message must not stay pending forever) but counted as an error.
+func (a *agent) consumeStream(ctx context.Context, cons transport.Consumer, opts transport.Options) {
+	err := cons.Consume(ctx, func(m transport.Msg) error {
+		req, derr := valkeytransport.Decode(m, newTelemetry, a.responderID, opts)
+		cell := a.cell(envelope.Of(req))
+		a.inst.Message(ctx, cell, harness.ResultReceived)
+		if valkeytransport.Redelivered(m) {
+			a.inst.Message(ctx, cell, harness.ResultRedelivered)
+		}
+		if derr != nil {
+			a.inst.Error(ctx, cell, "validate")
+			_ = m.Ack() // drop the poison message rather than keep it pending forever
+			return nil
+		}
+		a.inst.Message(ctx, cell, harness.ResultOK)
+		return m.Ack()
+	})
+	if err != nil {
+		log.Printf("valkey stream: consume: %v", err)
 	}
 }
 
