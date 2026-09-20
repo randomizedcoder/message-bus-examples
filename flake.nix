@@ -193,6 +193,7 @@
             chaosScripts = import (nixDir + "/chaos-scripts.nix") { inherit pkgs; };
             soakScripts = import (nixDir + "/soak-scripts.nix") { inherit pkgs; };
             benchScripts = import (nixDir + "/bench-scripts.nix") { inherit pkgs; };
+            protoBenchScripts = import (nixDir + "/proto-bench-scripts.nix") { inherit pkgs; };
             imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
           {
@@ -300,6 +301,16 @@
             k8s-client-bench = {
               type = "app";
               program = "${benchScripts.clientBench}/bin/k8s-client-bench";
+            };
+          }
+
+          # proto-bench host harness: drives benchcli across the region-agents,
+          # assembles run.json, renders results (design §9.3).
+          // {
+            k8s-proto-bench = {
+              type = "app";
+              program = "${protoBenchScripts.protoBench}/bin/k8s-proto-bench";
+              meta.description = "Drive benchcli across the region-agents and render a proto-bench run (run.json + results.md)";
             };
           }
 
