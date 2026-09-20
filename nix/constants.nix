@@ -236,6 +236,41 @@ rec {
       nodePortClientBase   = 30640;  # valkey-{0,1,2} client   → 30640/30641/30642
       nodePortSentinelBase = 30650;  # valkey-{0,1,2} sentinel → 30650/30651/30652
     };
+    # ─── proto-bench region agents ─────────────────────────────────────
+    # The four MicroVMs play four "regions" (design §2). Each node runs one
+    # region-agent pod (the regional cluster's gRPC + log + bus responders),
+    # pinned by nodeSelector and reachable from the host on a per-node gRPC
+    # NodePort so a connection to 10.33.33.1x:3071x always lands on that
+    # region's pod (Service externalTrafficPolicy: Local). Names deliberately
+    # avoid the existing `bench` / `constants.bench` used by k8s-client-bench.
+    workloads = {
+      namespace   = "workloads";
+      image       = "messagebus.local/region-agent";
+      tag         = "0.1.0";
+      grpcPort    = 9090;      # plaintext h2c inside the cluster
+      metricsPort = 9464;      # OTel /metrics + /healthz
+      # node → region label; cp0 is also the driver's stable endpoint.
+      regions = { cp0 = "us-west-2"; cp1 = "us-east-1"; cp2 = "eu-west-1"; w3 = "ap-south-1"; };
+      nodePortGrpcBase  = 30710;  # + node index: cp0 30710, cp1 30711, cp2 30712, w3 30713
+      nodePortGlobalApi = 30700;  # "global API" endpoint (WatchWorkload/log demos), points at cp0's pod
+    };
+  };
+
+  # ─── proto-bench host driver defaults ──────────────────────────────
+  # The k8s-proto-bench harness (P4) drives benchcli against the region
+  # agents. Its host-side OTel /metrics ports are a distinct range from the
+  # soak/bench clients (9200-9211) so the two can be scraped independently.
+  protoBench = {
+    hostMetricsBasePort = 9300;   # driver-side OTel /metrics; one port per concurrent benchcli
+    hostMetricsCount    = 8;      # 9300-9307
+    defaults = {
+      duration = "30s";
+      warmup   = "5s";
+      rate     = "2000/s";
+      inflight = 64;
+      repeats  = 5;
+      logDir   = "./proto-bench-logs";
+    };
   };
 
   # ─── Observability stack (in-cluster Prometheus + Grafana) ─────────

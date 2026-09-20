@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: region-agents
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: region-agent
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: region-agent
+  ports:
+  - name: metrics
+    port: 9464
+    targetPort: 9464
+  - name: grpc
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: region-agent-global
+  namespace: workloads
+spec:
+  type: NodePort
+  selector:
+    app: region-agent-us-west-2
+  ports:
+  - name: grpc
+    port: 9090
+    targetPort: 9090
+    nodePort: 30700
+

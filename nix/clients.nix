@@ -39,8 +39,10 @@ let
       "nats/request-reply"
       "nats/queue-groups"
       "nats/leaf"
-      # proto-bench host driver (codec subcommand in P1; transports later).
+      # proto-bench host driver (codec subcommand in P1; gRPC in P2).
       "workloads/benchcli"
+      # proto-bench in-cluster server (gRPC services in P2; bus responders P3).
+      "workloads/region-agent"
     ];
     meta = {
       description = "Message-bus pub/sub CLI clients (NATS, RabbitMQ, MQTT, ValKey)";

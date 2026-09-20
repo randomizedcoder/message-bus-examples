@@ -52,4 +52,23 @@ data:
       - job_name: soak-clients
         static_configs:
           - targets: ['10.33.33.1:9200', '10.33.33.1:9201', '10.33.33.1:9202', '10.33.33.1:9203', '10.33.33.1:9204', '10.33.33.1:9205', '10.33.33.1:9206', '10.33.33.1:9207', '10.33.33.1:9208', '10.33.33.1:9209', '10.33.33.1:9210', '10.33.33.1:9211']
+      # proto-bench region agents (mbbench_* role=server + Go/process
+      # collectors). Fast scrape so a 30s cell has enough samples.
+      - job_name: workloads-agents
+        scrape_interval: 5s
+        static_configs:
+          - targets: ['region-agent-us-west-2.region-agents.workloads.svc.cluster.local:9464', 'region-agent-us-east-1.region-agents.workloads.svc.cluster.local:9464', 'region-agent-eu-west-1.region-agents.workloads.svc.cluster.local:9464', 'region-agent-ap-south-1.region-agents.workloads.svc.cluster.local:9464']
+        # Label each series with its region (from the pod DNS name,
+        # e.g. region-agent-us-east-1.region-agents...:9464).
+        metric_relabel_configs:
+          - source_labels: [instance]
+            regex: 'region-agent-([^.]+)\..*'
+            target_label: agent_region
+            replacement: '$1'
+      # proto-bench host driver(s): benchcli OTel /metrics over the
+      # k8sbr0 bridge (mbbench_* role=client).
+      - job_name: proto-bench-driver
+        scrape_interval: 5s
+        static_configs:
+          - targets: ['10.33.33.1:9300', '10.33.33.1:9301', '10.33.33.1:9302', '10.33.33.1:9303', '10.33.33.1:9304', '10.33.33.1:9305', '10.33.33.1:9306', '10.33.33.1:9307']
 

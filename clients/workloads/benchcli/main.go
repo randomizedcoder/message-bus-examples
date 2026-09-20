@@ -35,8 +35,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "benchcli codec:", err)
 			os.Exit(1)
 		}
-	case "grpc", "nats", "rabbitmq", "valkey", "mqtt", "clockprobe", "report":
-		fmt.Fprintf(os.Stderr, "benchcli %s: not yet implemented (see docs/protobuf-grpc-benchmark-design.md phases P2–P4)\n", os.Args[1])
+	case "grpc":
+		if err := runGRPC(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "benchcli grpc:", err)
+			os.Exit(1)
+		}
+	case "nats", "rabbitmq", "valkey", "mqtt", "clockprobe", "report":
+		fmt.Fprintf(os.Stderr, "benchcli %s: not yet implemented (see docs/protobuf-grpc-benchmark-design.md phases P3–P4)\n", os.Args[1])
 		os.Exit(2)
 	default:
 		usage()

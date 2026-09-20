@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: region-agent-ap-south-1
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: region-agent
+    app: region-agent-ap-south-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: region-agent-ap-south-1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: region-agent
+        app: region-agent-ap-south-1
+    spec:
+      hostname: region-agent-ap-south-1
+      subdomain: region-agents
+      nodeSelector:
+        kubernetes.io/hostname: k8s-w3
+      containers:
+      - name: region-agent
+        image: messagebus.local/region-agent:0.1.0
+        imagePullPolicy: Never
+        args:
+        - -region=ap-south-1
+        - -grpc-addr=:9090
+        - -metrics-addr=:9464
+        - -codec=proto
+        - -pool=all
+        env:
+        - name: REGION
+          value: ap-south-1
+        - name: GOGC
+          value: "100"
+        ports:
+        - containerPort: 9090
+          name: grpc
+        - containerPort: 9464
+          name: metrics
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9464
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9464
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: "2"
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: region-agent-ap-south-1
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: region-agent
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app: region-agent-ap-south-1
+  ports:
+  - name: grpc
+    port: 9090
+    targetPort: 9090
+    nodePort: 30713
+

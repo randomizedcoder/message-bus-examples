@@ -130,6 +130,11 @@ func parseRate(s string) (time.Duration, error) {
 	return time.Duration(float64(time.Second) / n), nil
 }
 
+// ParseRate is the exported form of parseRate for the proto-bench harness's
+// -rate flag: it converts a "-rate" value ("", "0", "N", or "N/s") into a
+// per-message delay (0 = no throttle). See parseRate for the accepted forms.
+func ParseRate(s string) (time.Duration, error) { return parseRate(s) }
+
 // Usage prints the standard usage line and exits non-zero.
 func Usage(bin string) {
 	fmt.Fprintf(os.Stderr,

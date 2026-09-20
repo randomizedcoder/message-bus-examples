@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: region-agent-us-west-2
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: region-agent
+    app: region-agent-us-west-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: region-agent-us-west-2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: region-agent
+        app: region-agent-us-west-2
+    spec:
+      hostname: region-agent-us-west-2
+      subdomain: region-agents
+      nodeSelector:
+        kubernetes.io/hostname: k8s-cp0
+      containers:
+      - name: region-agent
+        image: messagebus.local/region-agent:0.1.0
+        imagePullPolicy: Never
+        args:
+        - -region=us-west-2
+        - -grpc-addr=:9090
+        - -metrics-addr=:9464
+        - -codec=proto
+        - -pool=all
+        env:
+        - name: REGION
+          value: us-west-2
+        - name: GOGC
+          value: "100"
+        ports:
+        - containerPort: 9090
+          name: grpc
+        - containerPort: 9464
+          name: metrics
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 9464
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9464
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: "2"
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: region-agent-us-west-2
+  namespace: workloads
+  labels:
+    app.kubernetes.io/name: region-agent
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app: region-agent-us-west-2
+  ports:
+  - name: grpc
+    port: 9090
+    targetPort: 9090
+    nodePort: 30710
+
