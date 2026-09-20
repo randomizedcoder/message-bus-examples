@@ -15,6 +15,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/corpus"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/envelope"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/harness"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/transport"
 	mqtttransport "github.com/randomizedcoder/message-bus-examples/clients/internal/transport/mqtt"
 	natstransport "github.com/randomizedcoder/message-bus-examples/clients/internal/transport/nats"
 	rmqtransport "github.com/randomizedcoder/message-bus-examples/clients/internal/transport/rabbitmq"
@@ -41,7 +42,15 @@ func runNATS(args []string) error {
 	}
 	br.requester = natstransport.NewRequester(nc, br.opts, *f.region)
 	defer br.requester.Close()
-	return runAndPrint("nats_request_reply", *f.addr, br, req, newResp, f)
+	dial := func() (transport.Requester, func(), error) {
+		c, err := natstransport.Dial("nats://" + *f.addr)
+		if err != nil {
+			return nil, nil, err
+		}
+		r := natstransport.NewRequester(c, br.opts, *f.region)
+		return r, func() { r.Close(); c.Close() }, nil
+	}
+	return runAndPrint("nats_request_reply", *f.addr, br, req, newResp, f, dial)
 }
 
 // runRabbitMQ drives the RabbitMQ RPC Deploy flow (direct reply-to).
@@ -69,7 +78,19 @@ func runRabbitMQ(args []string) error {
 		return err
 	}
 	defer br.requester.Close()
-	return runAndPrint("rabbitmq_rpc", *f.addr, br, req, newResp, f)
+	dial := func() (transport.Requester, func(), error) {
+		c, err := rmqtransport.Dial(url)
+		if err != nil {
+			return nil, nil, err
+		}
+		r, err := rmqtransport.NewRequester(c, br.opts, *f.region)
+		if err != nil {
+			c.Close()
+			return nil, nil, err
+		}
+		return r, func() { r.Close(); c.Close() }, nil
+	}
+	return runAndPrint("rabbitmq_rpc", *f.addr, br, req, newResp, f, dial)
 }
 
 // runValkey drives the Valkey stream RPC Deploy flow (XADD/XREADGROUP/XACK).
@@ -91,7 +112,12 @@ func runValkey(args []string) error {
 	clientID := fmt.Sprintf("benchcli-%d", os.Getpid())
 	br.requester = valkeytransport.NewRequester(rdb, br.opts, *f.region, clientID)
 	defer br.requester.Close()
-	return runAndPrint("valkey_stream", *f.addr, br, req, newResp, f)
+	dial := func() (transport.Requester, func(), error) {
+		db := newValkeyClient(*f.addr, *f.sentinels, *f.pass)
+		r := valkeytransport.NewRequester(db, br.opts, *f.region, clientID)
+		return r, func() { r.Close(); db.Close() }, nil
+	}
+	return runAndPrint("valkey_stream", *f.addr, br, req, newResp, f, dial)
 }
 
 // runMQTT drives the MQTT one-way telemetry publish loop (tier A). There is no
@@ -154,10 +180,11 @@ func runMQTT(args []string) error {
 
 // runAndPrint runs the configured run mode over the request/reply Requester,
 // prints the summary, and (when the harness passed -out/-hgrm) emits the
-// per-cell record + histogram (design §8.2).
-func runAndPrint(kind, addr string, br *busRun, req proto.Message, newResp func() proto.Message, f *busFlags) error {
+// per-cell record + histogram (design §8.2). dial is the fresh-connection
+// factory used only by coldstart (nil for a transport that cannot re-dial).
+func runAndPrint(kind, addr string, br *busRun, req proto.Message, newResp func() proto.Message, f *busFlags, dial coldDial) error {
 	rc := &reqCell{
-		requester: br.requester, reqProto: req, newResp: newResp,
+		requester: br.requester, dial: dial, reqProto: req, newResp: newResp,
 		cenum: br.cenum, tenum: br.tenum, inst: br.inst, cell: br.cell,
 	}
 	res, err := drive(context.Background(), rc, f.driveConfig(), wireLen(br.opts.Codec, req))

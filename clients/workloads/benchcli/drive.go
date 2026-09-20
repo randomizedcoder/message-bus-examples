@@ -29,7 +29,12 @@ const (
 	modeWindowed   = "windowed"
 	modeOpenLoop   = "openloop"
 	modeSaturation = "saturation"
+	modeColdstart  = "coldstart"
 )
+
+// defaultColdstartConns is how many fresh connections coldstart establishes when
+// -conns is 0; each contributes one first-request-latency sample (design §8.2).
+const defaultColdstartConns = 20
 
 // defaultOpenInflight caps outstanding open-loop requests when -inflight is 0.
 // Open-loop keeps sending at its intended instants regardless of replies; the
@@ -57,13 +62,14 @@ const (
 // driveConfig is the run-mode configuration for one cell, parsed from the
 // transport subcommand's flags.
 type driveConfig struct {
-	mode     string        // latency | windowed | openloop | saturation
+	mode     string        // latency | windowed | openloop | saturation | coldstart
 	n        int           // message budget (closed modes)
 	inflight int           // concurrent workers (closed) / max outstanding (open)
 	rate     float64       // offered msg/s (open modes); base rate for saturation
 	duration time.Duration // wall-clock budget (openloop)
 	step     time.Duration // per-ramp-step window (saturation)
 	floor    time.Duration // reference p99 for the saturation ceiling (0 = measure)
+	conns    int           // fresh connections (coldstart)
 	timeout  time.Duration // per-request timeout
 	runID    string
 	fixture  string
@@ -114,8 +120,18 @@ func (c *driveConfig) validate() error {
 		if c.inflight <= 0 {
 			c.inflight = defaultOpenInflight
 		}
+	case modeColdstart:
+		if c.conns <= 0 {
+			c.conns = defaultColdstartConns
+		}
+		if c.inflight == 0 {
+			c.inflight = 1
+		}
+		if c.inflight != 1 {
+			return fmt.Errorf("mode=coldstart sends one request per fresh connection (inflight=1, got -inflight=%d)", c.inflight)
+		}
 	default:
-		return fmt.Errorf("unknown -mode %q (latency|windowed|openloop|saturation)", c.mode)
+		return fmt.Errorf("unknown -mode %q (latency|windowed|openloop|saturation|coldstart)", c.mode)
 	}
 	return nil
 }
@@ -127,6 +143,7 @@ func (c *driveConfig) validate() error {
 // one of these and share the identical driver.
 type reqCell struct {
 	requester transport.Requester
+	dial      coldDial      // fresh-connection factory (coldstart only; nil otherwise)
 	reqProto  proto.Message // request prototype, cloned per worker
 	newResp   func() proto.Message
 	cenum     workloadsv1.Codec
@@ -134,6 +151,12 @@ type reqCell struct {
 	inst      *harness.Instruments
 	cell      harness.Cell
 }
+
+// coldDial establishes a fresh connection and returns a ready Requester plus a
+// teardown that closes the underlying connection (not just the Requester). Only
+// coldstart uses it — to measure first-request latency on a cold path (design
+// §8.2); the other modes reuse reqCell.requester, so it is nil for them.
+type coldDial func() (transport.Requester, func(), error)
 
 // job is one worker's private request/response pair, so many workers can drive
 // a single concurrency-safe Requester without sharing mutable proto messages.
@@ -213,6 +236,15 @@ func drive(ctx context.Context, rc *reqCell, cfg driveConfig, wireReq int64) (ce
 	defer rc.inst.SetActiveCell(ctx, rc.cell, false)
 
 	switch cfg.mode {
+	case modeColdstart:
+		s := newSeries()
+		elapsed, err := d.runColdstart(ctx, s)
+		if err != nil {
+			return cellResult{}, err
+		}
+		return cellResult{
+			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq, inflight: 1,
+		}, nil
 	case modeSaturation:
 		elapsed, s, sr := d.runSaturation(ctx)
 		return cellResult{
@@ -387,11 +419,43 @@ func (d *driver) ramp(ctx context.Context, pass openPassFn) (time.Duration, *ser
 	return total, kneeS, sr
 }
 
-// do issues one request for sequence seq using the worker's private job and
-// records the outcome into s. from is the instant RTT is measured against (the
-// send instant for closed loops, the intended instant for open-loop). expected>0
-// additionally records the coordinated-omission-corrected series.
+// runColdstart establishes cfg.conns fresh connections in turn and records each
+// one's first-request latency, so the distribution is over cold paths (gRPC
+// stream setup, NATS reply subscription, AMQP consumer, Valkey group — design
+// §8.2). The connect itself is not timed (a failed dial is a "connect" error);
+// only the first request's RTT is the sample, so it is comparable to the latency
+// floor. Connections are opened one at a time to avoid a dial storm and to keep
+// each sample a genuine cold first request rather than a warmed pool.
+func (d *driver) runColdstart(ctx context.Context, s *series) (time.Duration, error) {
+	if d.rc.dial == nil {
+		return 0, fmt.Errorf("mode=coldstart is not supported by this transport (no per-connection dialer)")
+	}
+	start := time.Now()
+	for i := 0; i < d.cfg.conns; i++ {
+		r, teardown, err := d.rc.dial()
+		if err != nil {
+			s.record(0, "connect", 0)
+			continue
+		}
+		j := d.rc.newJob()
+		d.doOn(ctx, r, s, j, uint64(i), time.Now(), 0)
+		teardown()
+	}
+	return time.Since(start), nil
+}
+
+// do issues one request for sequence seq over the cell's shared Requester.
 func (d *driver) do(ctx context.Context, s *series, j *job, seq uint64, from time.Time, expected time.Duration) {
+	d.doOn(ctx, d.rc.requester, s, j, seq, from, expected)
+}
+
+// doOn issues one request for sequence seq over r using the worker's private job
+// and records the outcome into s. from is the instant RTT is measured against
+// (the send instant for closed loops, the intended instant for open-loop).
+// expected>0 additionally records the coordinated-omission-corrected series.
+// coldstart passes a fresh per-connection Requester as r; the other modes pass
+// the cell's shared one via do.
+func (d *driver) doOn(ctx context.Context, r transport.Requester, s *series, j *job, seq uint64, from time.Time, expected time.Duration) {
 	rc := d.rc
 	if err := envelope.Fill(j.env, d.cfg.runID, seq, rc.cenum, rc.tenum, d.cfg.fixture); err != nil {
 		s.record(0, "encode", expected)
@@ -399,7 +463,7 @@ func (d *driver) do(ctx context.Context, s *series, j *job, seq uint64, from tim
 	}
 	proto.Reset(j.resp)
 	rctx, cancel := context.WithTimeout(ctx, d.cfg.timeout)
-	err := rc.requester.Request(rctx, j.req, j.resp)
+	err := r.Request(rctx, j.req, j.resp)
 	cancel()
 	rtt := time.Since(from)
 	rc.inst.Message(ctx, rc.cell, harness.ResultSent)

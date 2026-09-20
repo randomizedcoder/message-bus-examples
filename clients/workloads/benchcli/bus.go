@@ -40,6 +40,7 @@ type busFlags struct {
 	duration                     *time.Duration
 	step                         *time.Duration
 	floor                        *time.Duration
+	conns                        *int
 }
 
 func newBusFlags(name, defaultAddr, defaultFixture string) *busFlags {
@@ -65,12 +66,13 @@ func newBusFlags(name, defaultAddr, defaultFixture string) *busFlags {
 		repeat:      fs.Int("repeat", 0, "repeat index for the emitted cell record"),
 		out:         fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)"),
 		hgrm:        fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)"),
-		mode:        fs.String("mode", "latency", "run mode: latency|windowed|openloop|saturation (design §8.2)"),
+		mode:        fs.String("mode", "latency", "run mode: latency|windowed|openloop|saturation|coldstart (design §8.2)"),
 		inflight:    fs.Int("inflight", 0, "in-flight concurrency (0 = mode default: latency 1; windowed needs >=2; openloop/saturation cap 1024)"),
 		rate:        fs.Float64("rate", 0, "offered load in msg/s (openloop); base rate the ramp doubles from (saturation)"),
 		duration:    fs.Duration("duration", 30*time.Second, "wall-clock budget for open-loop modes"),
 		step:        fs.Duration("step", 10*time.Second, "per-ramp-step window (saturation)"),
 		floor:       fs.Duration("floor", 0, "reference p99 for the saturation ceiling (0 = measure from the first ramp step)"),
+		conns:       fs.Int("conns", 0, "fresh connections to sample (coldstart; 0 = 20)"),
 	}
 }
 
@@ -83,7 +85,7 @@ func (b *busFlags) emit() emitOptions {
 func (b *busFlags) driveConfig() driveConfig {
 	return driveConfig{
 		mode: *b.mode, n: *b.n, inflight: *b.inflight, rate: *b.rate,
-		duration: *b.duration, step: *b.step, floor: *b.floor,
+		duration: *b.duration, step: *b.step, floor: *b.floor, conns: *b.conns,
 		timeout: *b.timeout, runID: *b.runID, fixture: *b.fixture,
 	}
 }
