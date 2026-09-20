@@ -159,3 +159,16 @@ func ContentType(c Codec) string {
 	}
 	return "application/protobuf"
 }
+
+// ByContentType picks the codec to decode a bus payload from the transport
+// metadata a responder sees before the envelope (design §3.9). application/json
+// → ProtoJSON; everything else → Proto. proto and vtproto are byte-identical on
+// the wire, so a vtproto-encoded payload decodes correctly with Proto — the
+// responder cannot (and need not) distinguish them from the content type; the
+// harness aligns the agent's own -codec when it wants vtproto CPU on the agent.
+func ByContentType(ct string) Codec {
+	if ct == "application/json" {
+		return ProtoJSON
+	}
+	return Proto
+}

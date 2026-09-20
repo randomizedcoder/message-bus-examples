@@ -67,6 +67,26 @@ let
         stringData:{"password":$pass}}' \
       > $out/valkey-credentials.json
 
+    # ── 3+4. proto-bench region-agent copies (ns: workloads) ──────────
+    # Secrets are namespaced, and the region agents run in `workloads`, so the
+    # RabbitMQ / Valkey credentials are replicated there for the agents' bus
+    # responders (the same values; NATS and MQTT are unauthenticated). The
+    # RabbitMQ user/pass reach the -amqp URL via $(VAR) expansion; the Valkey
+    # password is read from VALKEY_PASSWORD (design §9.2, P3).
+    jq -n \
+      --arg pass "$RABBITMQ_PASS" \
+      '{apiVersion:"v1", kind:"Secret",
+        metadata:{name:"rabbitmq-credentials", namespace:"workloads"},
+        stringData:{"RABBITMQ_DEFAULT_USER":"admin", "RABBITMQ_DEFAULT_PASS":$pass}}' \
+      > $out/rabbitmq-credentials-workloads.json
+
+    jq -n \
+      --arg pass "$VALKEY_PASS" \
+      '{apiVersion:"v1", kind:"Secret",
+        metadata:{name:"valkey-credentials", namespace:"workloads"},
+        stringData:{"password":$pass}}' \
+      > $out/valkey-credentials-workloads.json
+
     echo "Generated $(ls $out/*.json | wc -l) Secret manifests"
   '';
 

@@ -9,10 +9,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	workloadsv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1"
 )
+
+// Carrier is implemented by every proto-bench request, response, and bus
+// payload — each carries `Envelope envelope = 1` (design §3). Of extracts it so
+// a transport can stamp generically without knowing the concrete message type.
+type Carrier interface {
+	GetEnvelope() *workloadsv1.Envelope
+}
+
+// Of returns m's envelope, or nil if m carries none / it is unset. Nil-safe: the
+// generated GetEnvelope handles a nil message.
+func Of(m proto.Message) *workloadsv1.Envelope {
+	if c, ok := m.(Carrier); ok {
+		return c.GetEnvelope()
+	}
+	return nil
+}
 
 // Fill populates the client-side envelope fields (run id, message id, sequence,
 // send time, codec, transport, fixture). message_id is a raw 16-byte UUIDv7.

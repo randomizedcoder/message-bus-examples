@@ -40,8 +40,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "benchcli grpc:", err)
 			os.Exit(1)
 		}
-	case "nats", "rabbitmq", "valkey", "mqtt", "clockprobe", "report":
-		fmt.Fprintf(os.Stderr, "benchcli %s: not yet implemented (see docs/protobuf-grpc-benchmark-design.md phases P3–P4)\n", os.Args[1])
+	case "nats", "rabbitmq", "valkey", "mqtt":
+		run := map[string]func([]string) error{
+			"nats": runNATS, "rabbitmq": runRabbitMQ, "valkey": runValkey, "mqtt": runMQTT,
+		}[os.Args[1]]
+		if err := run(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "benchcli %s: %v\n", os.Args[1], err)
+			os.Exit(1)
+		}
+	case "clockprobe", "report":
+		fmt.Fprintf(os.Stderr, "benchcli %s: not yet implemented (see docs/protobuf-grpc-benchmark-design.md phase P4)\n", os.Args[1])
 		os.Exit(2)
 	default:
 		usage()
