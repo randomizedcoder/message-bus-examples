@@ -109,6 +109,8 @@ spec:
           mountPath: /etc/grafana/dashboards/community/redis-exporter
         - name: dash-node-exporter-full
           mountPath: /etc/grafana/dashboards/community/node-exporter-full
+        - name: dash-protobench
+          mountPath: /etc/grafana/dashboards/protobench
         - name: data
           mountPath: /var/lib/grafana
         - name: logs
@@ -148,6 +150,9 @@ spec:
       - name: dash-node-exporter-full
         configMap:
           name: grafana-dashboard-node-exporter-full
+      - name: dash-protobench
+        configMap:
+          name: grafana-dashboard-protobench
       - name: data
         emptyDir: {}
       - name: logs
