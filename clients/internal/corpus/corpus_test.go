@@ -108,3 +108,33 @@ func TestSizes(t *testing.T) {
 		t.Fatalf("max fixture too small: %d bytes", sizes[corpus.Max])
 	}
 }
+
+// TestLogChunkBytes: the fan-out payload carries exactly the requested byte
+// count, validates, and is deterministic per seed (the logs fan-out driver
+// depends on all three — design §3.9).
+func TestLogChunkBytes(t *testing.T) {
+	tests := []struct {
+		description string
+		n           int
+	}{
+		{"1 byte boundary", 1},
+		{"64 KiB", 64 << 10},
+		{"256 KiB fan-out default", 256 << 10},
+		{"960 KiB max-chunk equivalent", 960 << 10},
+	}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			a := corpus.New(42).LogChunkBytes(tc.n)
+			if got := len(a.GetData()); got != tc.n {
+				t.Fatalf("LogChunkBytes(%d) data = %d bytes, want exactly %d", tc.n, got, tc.n)
+			}
+			if err := protovalidate.Validate(a); err != nil {
+				t.Fatalf("LogChunkBytes(%d) failed validation: %v", tc.n, err)
+			}
+			b := corpus.New(42).LogChunkBytes(tc.n)
+			if !proto.Equal(a, b) {
+				t.Fatalf("same seed produced different LogChunkBytes(%d)", tc.n)
+			}
+		})
+	}
+}

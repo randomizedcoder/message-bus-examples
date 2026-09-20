@@ -94,8 +94,21 @@ func (c *Corpus) Deploy(f Fixture) *workloadsv1.DeployRequest {
 // LogChunk builds the max fixture: a single ~960 KiB log chunk (the payload
 // where ProtoJSON base64 expansion is visible at scale).
 func (c *Corpus) LogChunk(f Fixture) *workloadsv1.LogChunk {
-	r := c.randFor(hash("logchunk:" + string(f)))
-	size := 960 << 10
+	return c.logChunk(f, hash("logchunk:"+string(f)), 960<<10)
+}
+
+// LogChunkBytes builds a LogChunk carrying exactly n bytes of synthetic log data
+// (the fan-out payload, design §3.9). The logs fan-out driver sweeps n so even
+// ProtoJSON's base64 expansion (×1.33) stays under NATS's 1 MB max_payload — the
+// canonical `max` fixture is 960 KiB, which only the binary codecs fit.
+func (c *Corpus) LogChunkBytes(n int) *workloadsv1.LogChunk {
+	return c.logChunk(Max, hash(fmt.Sprintf("logchunk-bytes:%d", n)), n)
+}
+
+// logChunk is the shared LogChunk builder (data first, then the RNG-derived pod
+// name, so the byte stream is independent of struct-field order).
+func (c *Corpus) logChunk(f Fixture, salt uint64, size int) *workloadsv1.LogChunk {
+	r := c.randFor(salt)
 	data := randBytes(r, size)
 	return &workloadsv1.LogChunk{
 		Envelope:  c.envelope(f, 3),

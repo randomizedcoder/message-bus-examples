@@ -75,7 +75,7 @@ core list for the driver), `--integrity` (`none|sha256`), `--log-dir`
 
 Every request/reply transport supports every mode except where noted; the
 one-way telemetry drivers (`mqtt` fire-and-forget, `jetstream`/`quorum`/`stream`
-durable) are latency-only. See design §8.2/§8.4.
+durable) and the `logs` fan-out driver are latency-only. See design §8.2/§8.4.
 
 | Mode | Shape | Headline output |
 |------|-------|-----------------|
@@ -125,6 +125,19 @@ report shows what it can measure.
   every delivery, and records `result="redelivered"` for any entry re-read from
   its pending list (a message delivered but not acked before a restart — design
   §2.3 tier B, §3.9).
+- `logs` — the NATS JetStream **logs fan-out** driver (design §2.2, §3.9): it
+  plays the regional log source, publishing `-n` `LogChunk`s on
+  `wl.<region>.logs.<workload_id>` (backed by the self-trimming R3 file stream
+  `WL_LOGS`) — a `publish→persist-ack` loop whose latency is the headline — while
+  `-subscribers` ephemeral push consumers each attach their own consumer and
+  receive **every** chunk (the fan-out; contrast telemetry's single load-balanced
+  pull consumer). Publisher and subscribers share the process, so fan-out
+  delivery latency (`publish→delivered`) is measured on the monotonic clock and
+  total deliveries (`== ok × subscribers` with no loss) is the correctness
+  signal. `-chunk-kib` (default 256) sizes the payload so every codec stays under
+  NATS's 1 MB `max_payload` — only `proto`/`vtproto` fit the full 960 KiB `max`
+  chunk. Cells carry `mode="fanout"` to separate them from the telemetry publish
+  loop. Latency-only.
 - `correctness` — the §9.4 pass: in-process `proto.Equal` per codec×fixture,
   corpus determinism, protovalidate valid/invalid, and (over `-transport`) a
   live round trip asserting the `message_id` echo.
