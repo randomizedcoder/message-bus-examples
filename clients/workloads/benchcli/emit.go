@@ -23,6 +23,19 @@ type emitOptions struct {
 	repeat int
 }
 
+// cellResult is what one finished run-mode cell measured on the driver side:
+// the histogram plus the run-mode knobs (inflight/rate) and the counters the
+// mode produced (late_sends). The host harness merges the agent/broker columns
+// in later (design §8.4).
+type cellResult struct {
+	hdr       *harness.HDR
+	elapsed   time.Duration
+	wireReq   int64
+	inflight  int
+	rate      float64
+	lateSends int64
+}
+
 // cellID is the run.json cell key: transport/codec/fixture/pool/gc/mode
 // (design §8.5, e.g. "grpc_unary/proto/medium/all/default/latency").
 func cellID(c harness.Cell) string {
@@ -33,21 +46,21 @@ func cellID(c harness.Cell) string {
 // a finished cell. Agent/broker/one-way/GC columns are merged in later by the
 // host harness (P4b-3) from the agent memstats and Prometheus; this is exactly
 // what the driver alone knows (design §8.4).
-func summaryFromHDR(c harness.Cell, hdr *harness.HDR, elapsed time.Duration, wireReq int64, inflight int, rate float64) runrecord.Summary {
-	s := hdr.Summarize(elapsed)
+func summaryFromHDR(c harness.Cell, r cellResult) runrecord.Summary {
+	s := r.hdr.Summarize(r.elapsed)
 	us := func(d time.Duration) float64 { return float64(d.Nanoseconds()) / 1000 }
 	out := runrecord.Summary{
 		Tier: c.Tier, Transport: c.Transport, Codec: c.Codec, Fixture: c.Fixture,
-		Pool: c.Pool, GC: c.GC, Mode: c.Mode, Inflight: inflight, Rate: rate,
-		Msgs: int64(s.Count), Errors: hdr.ErrorKinds(), ThroughputMsgS: s.ThroughputPerSec,
+		Pool: c.Pool, GC: c.GC, Mode: c.Mode, Inflight: r.inflight, Rate: r.rate,
+		Msgs: int64(s.Count), Errors: r.hdr.ErrorKinds(), ThroughputMsgS: s.ThroughputPerSec,
 		RTTP50US: us(s.P50), RTTP90US: us(s.P90), RTTP99US: us(s.P99),
 		RTTP999US: us(s.P999), RTTMaxUS: us(s.Max),
-		WireBytesReq: wireReq,
+		WireBytesReq: r.wireReq, LateSends: r.lateSends,
 	}
-	if wireReq > 0 && s.ThroughputPerSec > 0 {
-		out.ThroughputMiBS = s.ThroughputPerSec * float64(wireReq) / (1024 * 1024)
+	if r.wireReq > 0 && s.ThroughputPerSec > 0 {
+		out.ThroughputMiBS = s.ThroughputPerSec * float64(r.wireReq) / (1024 * 1024)
 	}
-	if p99, ok := hdr.CorrectedP99(); ok {
+	if p99, ok := r.hdr.CorrectedP99(); ok {
 		out.RTTCoCorrectedP99US = us(p99)
 	}
 	return out
@@ -55,10 +68,10 @@ func summaryFromHDR(c harness.Cell, hdr *harness.HDR, elapsed time.Duration, wir
 
 // emitCell writes the .hgrm (when -hgrm set) and the per-cell record JSON (when
 // -out set). Both empty → no-op, so interactive runs are unaffected.
-func emitCell(e emitOptions, c harness.Cell, hdr *harness.HDR, elapsed time.Duration, wireReq int64, inflight int, rate float64) error {
+func emitCell(e emitOptions, c harness.Cell, r cellResult) error {
 	if e.hgrm != "" {
 		var buf bytes.Buffer
-		if err := hdr.WriteHGRM(&buf); err != nil {
+		if err := r.hdr.WriteHGRM(&buf); err != nil {
 			return err
 		}
 		if err := os.WriteFile(e.hgrm, buf.Bytes(), 0o644); err != nil {
@@ -71,7 +84,7 @@ func emitCell(e emitOptions, c harness.Cell, hdr *harness.HDR, elapsed time.Dura
 	cell := runrecord.Cell{
 		ID:      cellID(c),
 		Repeat:  e.repeat,
-		Summary: summaryFromHDR(c, hdr, elapsed, wireReq, inflight, rate),
+		Summary: summaryFromHDR(c, r),
 		HGRM:    e.hgrm,
 	}
 	b, err := json.MarshalIndent(cell, "", "  ")

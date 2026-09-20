@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -13,7 +11,6 @@ import (
 	workloadsv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/codec"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/corpus"
-	"github.com/randomizedcoder/message-bus-examples/clients/internal/envelope"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/harness"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/metrics"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/pool"
@@ -37,6 +34,10 @@ type busFlags struct {
 	gc                           *string
 	repeat                       *int
 	out, hgrm                    *string
+	mode                         *string
+	inflight                     *int
+	rate                         *float64
+	duration                     *time.Duration
 }
 
 func newBusFlags(name, defaultAddr, defaultFixture string) *busFlags {
@@ -62,6 +63,10 @@ func newBusFlags(name, defaultAddr, defaultFixture string) *busFlags {
 		repeat:      fs.Int("repeat", 0, "repeat index for the emitted cell record"),
 		out:         fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)"),
 		hgrm:        fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)"),
+		mode:        fs.String("mode", "latency", "run mode: latency|windowed|openloop (design §8.2)"),
+		inflight:    fs.Int("inflight", 0, "in-flight concurrency (0 = mode default: latency 1; windowed needs >=2; openloop cap 1024)"),
+		rate:        fs.Float64("rate", 0, "offered load in msg/s (openloop)"),
+		duration:    fs.Duration("duration", 30*time.Second, "wall-clock budget for open-loop modes"),
 	}
 }
 
@@ -70,9 +75,17 @@ func (b *busFlags) emit() emitOptions {
 	return emitOptions{out: *b.out, hgrm: *b.hgrm, repeat: *b.repeat}
 }
 
+// driveConfig assembles the run-mode configuration from the parsed flags.
+func (b *busFlags) driveConfig() driveConfig {
+	return driveConfig{
+		mode: *b.mode, n: *b.n, inflight: *b.inflight, rate: *b.rate,
+		duration: *b.duration, timeout: *b.timeout, runID: *b.runID, fixture: *b.fixture,
+	}
+}
+
 // setup resolves the codec/pool/fixture/options and builds the metrics
-// instruments + cell shared by all bus runs.
-func (b *busFlags) setup(transportLabel, mode string, tenum workloadsv1.Transport) (*busRun, error) {
+// instruments + cell shared by all bus runs. The cell's mode comes from -mode.
+func (b *busFlags) setup(transportLabel string, tenum workloadsv1.Transport) (*busRun, error) {
 	cdc, err := codec.ByName(*b.codecName)
 	if err != nil {
 		return nil, err
@@ -96,7 +109,7 @@ func (b *busFlags) setup(transportLabel, mode string, tenum workloadsv1.Transpor
 	}
 	cell := harness.Cell{
 		Transport: transportLabel, Codec: *b.codecName, Fixture: *b.fixture, Pool: pmode.String(),
-		GC: *b.gc, Mode: mode, Region: *b.region, Role: "client", Tier: tierForTransport(tenum),
+		GC: *b.gc, Mode: *b.mode, Region: *b.region, Role: "client", Tier: tierForTransport(tenum),
 	}
 	return &busRun{opts: opts, inst: inst, cell: cell, cenum: cenum, tenum: tenum, corpus: corpus.New(*b.seed)}, nil
 }
@@ -123,55 +136,6 @@ func tierForTransport(t workloadsv1.Transport) string {
 	default:
 		return "rpc"
 	}
-}
-
-// runReqLoop is the request/response latency loop shared by the NATS/RabbitMQ/
-// Valkey RPC subcommands: it re-stamps the envelope each iteration, sends via
-// the Requester, records RTT + the mbbench_* counters, and verifies the reply
-// echoes the request's message_id (the cheap per-message correctness check —
-// the response survived the codec + transport round trip; design §9.4).
-func (r *busRun) runReqLoop(req proto.Message, newResp func() proto.Message, n int, runID, fixture string, timeout time.Duration) *harness.HDR {
-	ctx := context.Background()
-	r.inst.SetActiveCell(ctx, r.cell, true)
-	defer r.inst.SetActiveCell(ctx, r.cell, false)
-	env := req.(hasEnvelope).GetEnvelope()
-	resp := newResp()
-	lat := harness.NewHDR()
-	for i := 0; i < n; i++ {
-		if err := envelope.Fill(env, runID, uint64(i), r.cenum, r.tenum, fixture); err != nil {
-			lat.AddErrorKind("encode")
-			continue
-		}
-		proto.Reset(resp)
-		rctx, cancel := context.WithTimeout(ctx, timeout)
-		t0 := time.Now()
-		err := r.request(rctx, req, resp)
-		rtt := time.Since(t0)
-		cancel()
-		r.inst.Message(ctx, r.cell, harness.ResultSent)
-		if err != nil {
-			lat.AddErrorKind("transport")
-			r.inst.Error(ctx, r.cell, "transport")
-			if lat.NumErrors() <= 3 {
-				fmt.Fprintf(os.Stderr, "message %d: %v\n", i, err)
-			}
-			continue
-		}
-		if re := envelope.Of(resp); re == nil || !bytes.Equal(re.GetMessageId(), env.GetMessageId()) {
-			lat.AddErrorKind("corrupt")
-			r.inst.Error(ctx, r.cell, "corrupt")
-			continue
-		}
-		r.inst.Message(ctx, r.cell, harness.ResultReceived)
-		r.inst.RTT(ctx, r.cell, rtt)
-		lat.Record(rtt)
-	}
-	return lat
-}
-
-// request dispatches through the active Requester.
-func (r *busRun) request(ctx context.Context, req, resp proto.Message) error {
-	return r.requester.Request(ctx, req, resp)
 }
 
 // busPair returns the request message + a response constructor for a fixture on

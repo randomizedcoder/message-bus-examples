@@ -72,7 +72,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: benchcli <codec|grpc|nats|rabbitmq|valkey|mqtt|correctness|clockprobe|report> [flags]")
 	fmt.Fprintln(os.Stderr, "  codec        in-process codec/pool loop and schema demos (--sizes, --validate-demo, --antipattern)")
-	fmt.Fprintln(os.Stderr, "  grpc|nats|…  transport latency loop against a region-agent")
+	fmt.Fprintln(os.Stderr, "  grpc|nats|…  transport run-mode loop against a region-agent (-mode latency|windowed|openloop; §8.2)")
 	fmt.Fprintln(os.Stderr, "  correctness  assert codec round-trip + validation (+ live transport with -transport); the §9.4 gate")
 	fmt.Fprintln(os.Stderr, "  clockprobe   NTP-style clock-offset estimate against a region-agent (-json for the harness)")
 	fmt.Fprintln(os.Stderr, "  report       render run.json → results.tsv + results.md (-run <run.json>)")
