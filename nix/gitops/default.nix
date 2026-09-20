@@ -29,7 +29,7 @@ let
   valkey   = import (envDir + "/valkey.nix")   { inherit pkgs lib; };
 
   # Observability (in-cluster Prometheus + Grafana + NATS exporter)
-  monitoring = import (envDir + "/monitoring.nix") { inherit pkgs lib; };
+  monitoring = import (envDir + "/monitoring") { inherit pkgs lib; };
 
   # proto-bench region agents (gRPC in P2; bus responders in P3)
   workloads = import (envDir + "/workloads.nix") { inherit pkgs lib; };
