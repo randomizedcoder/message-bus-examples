@@ -35,6 +35,7 @@ type cellResult struct {
 	inflight  int
 	rate      float64
 	lateSends int64
+	missing   int64      // fault mode: sequences that got no valid reply (design §8.4; 0 for other modes)
 	sat       *satResult // saturation ramp verdict (nil for other modes; print-only)
 }
 
@@ -57,7 +58,7 @@ func summaryFromHDR(c harness.Cell, r cellResult) runrecord.Summary {
 		Msgs: int64(s.Count), Errors: r.hdr.ErrorKinds(), ThroughputMsgS: s.ThroughputPerSec,
 		RTTP50US: us(s.P50), RTTP90US: us(s.P90), RTTP99US: us(s.P99),
 		RTTP999US: us(s.P999), RTTMaxUS: us(s.Max),
-		WireBytesReq: r.wireReq, LateSends: r.lateSends,
+		WireBytesReq: r.wireReq, LateSends: r.lateSends, Missing: r.missing,
 	}
 	if r.wireReq > 0 && s.ThroughputPerSec > 0 {
 		out.ThroughputMiBS = s.ThroughputPerSec * float64(r.wireReq) / (1024 * 1024)
@@ -102,6 +103,9 @@ func emitCell(e emitOptions, c harness.Cell, r cellResult) error {
 func printRunExtras(r cellResult) {
 	if r.lateSends > 0 {
 		fmt.Printf("  late sends      %d\n", r.lateSends)
+	}
+	if r.missing > 0 {
+		fmt.Printf("  missing         %d (integrity — sequences with no valid reply)\n", r.missing)
 	}
 	if r.sat == nil {
 		return

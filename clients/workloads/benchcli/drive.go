@@ -21,15 +21,19 @@ import (
 // waits for its reply before sending the next); openloop is an open loop that
 // sends at fixed intended instants regardless of replies, which is what makes
 // it coordinated-omission-free. saturation is a ramp of open-loop passes that
-// finds the max sustainable rate (the knee). coldstart/fault land in a later
-// slice (they need a per-sample dial factory and harness pod-kill orchestration
-// respectively).
+// finds the max sustainable rate (the knee). coldstart samples the first-request
+// latency of fresh connections. fault is an open-loop pass that holds a fixed
+// rate straight through a broker/agent disruption (a pod kill, driven alongside
+// by nix/chaos-scripts.nix): it never aborts on an error — every request that
+// gets no valid reply is counted as a missing sequence, so the integrity
+// counters, not latency, are the result (design §8.2, §8.4).
 const (
 	modeLatency    = "latency"
 	modeWindowed   = "windowed"
 	modeOpenLoop   = "openloop"
 	modeSaturation = "saturation"
 	modeColdstart  = "coldstart"
+	modeFault      = "fault"
 )
 
 // defaultColdstartConns is how many fresh connections coldstart establishes when
@@ -130,8 +134,20 @@ func (c *driveConfig) validate() error {
 		if c.inflight != 1 {
 			return fmt.Errorf("mode=coldstart sends one request per fresh connection (inflight=1, got -inflight=%d)", c.inflight)
 		}
+	case modeFault:
+		// fault is open-loop at a fixed rate (design §8.2), so it needs the same
+		// -rate/-duration as openloop; the window is meant to span a pod kill.
+		if c.rate <= 0 {
+			return fmt.Errorf("mode=fault needs -rate > 0 (offered msg/s held through the disruption)")
+		}
+		if c.duration <= 0 {
+			return fmt.Errorf("mode=fault needs -duration > 0 (the window spanning the pod kill)")
+		}
+		if c.inflight <= 0 {
+			c.inflight = defaultOpenInflight
+		}
 	default:
-		return fmt.Errorf("unknown -mode %q (latency|windowed|openloop|saturation|coldstart)", c.mode)
+		return fmt.Errorf("unknown -mode %q (latency|windowed|openloop|saturation|coldstart|fault)", c.mode)
 	}
 	return nil
 }
@@ -257,6 +273,20 @@ func drive(ctx context.Context, rc *reqCell, cfg driveConfig, wireReq int64) (ce
 		return cellResult{
 			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
 			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
+		}, nil
+	case modeFault:
+		// The same open-loop engine as openloop, but the errors it tolerates are
+		// the point: every request that gets no valid reply during the disruption
+		// is surfaced as a missing sequence (the fault integrity counter, design
+		// §8.4). duplicate/reordered/redelivered are streaming-tier counters not
+		// observable in unary request/reply — one reply per request — so they stay
+		// zero here and blank in the report.
+		s := newSeries()
+		elapsed := d.openPass(ctx, cfg.rate, cfg.duration, s)
+		return cellResult{
+			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
+			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
+			missing: int64(s.hdr.NumErrors()),
 		}, nil
 	default: // latency, windowed
 		s := newSeries()
