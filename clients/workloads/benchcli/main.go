@@ -59,8 +59,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "report":
-		fmt.Fprintf(os.Stderr, "benchcli report: not yet implemented (results.md renderer arrives with the k8s-proto-bench harness, phase P4b)\n")
-		os.Exit(2)
+		if err := runReport(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "benchcli report:", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -73,6 +75,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  grpc|nats|…  transport latency loop against a region-agent")
 	fmt.Fprintln(os.Stderr, "  correctness  assert codec round-trip + validation (+ live transport with -transport); the §9.4 gate")
 	fmt.Fprintln(os.Stderr, "  clockprobe   NTP-style clock-offset estimate against a region-agent (-json for the harness)")
+	fmt.Fprintln(os.Stderr, "  report       render run.json → results.tsv + results.md (-run <run.json>)")
 }
 
 func runCodec(args []string) error {
