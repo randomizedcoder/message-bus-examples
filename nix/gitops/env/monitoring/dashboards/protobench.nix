@@ -1,0 +1,159 @@
+# nix/gitops/env/monitoring/dashboards/protobench.nix
+#
+# The proto-bench Grafana dashboard (design §12.4): transport/codec latency,
+# GC/allocation pressure, and integrity/throughput for the mbbench_* metrics the
+# region agents (role=server, job=workloads-agents) and host driver
+# (job=proto-bench-driver) expose. Provisioned as its OWN ConfigMap in its own
+# mount subdir (kept separate from the community dashboards CM, which is already
+# ~926 KB near the 1 MB etcd object cap — see grafana-community-cm-size-limit).
+#
+# The dashboard uid is `protobench`: the k8s-proto-bench harness posts per-cell
+# and fault-kill Grafana annotations bound to THIS uid (a POST to a missing
+# dashboardUID 500s), so those annotations only land once this dashboard exists.
+# The built-in annotation query below (tag `protobench`) renders them as markers.
+#
+# Split note: returns { manifest; cmName; volName; mountPath } so ./default.nix
+# can append this dashboard's volumeMount/volume to the community strings that
+# grafana.nix mounts (the file provider scans /etc/grafana/dashboards recursively).
+{ ns }:
+{
+  cmName    = "grafana-dashboard-protobench";
+  volName   = "dash-protobench";
+  mountPath = "/etc/grafana/dashboards/protobench";
+  manifest = {
+    name = "monitoring/grafana-dashboard-protobench.yaml";
+    content = ''
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-dashboard-protobench
+        namespace: ${ns}
+      data:
+        protobench.json: |
+          {
+            "uid": "protobench",
+            "title": "Proto-bench",
+            "schemaVersion": 39,
+            "version": 1,
+            "editable": true,
+            "time": { "from": "now-1h", "to": "now" },
+            "refresh": "15s",
+            "templating": { "list": [] },
+            "annotations": { "list": [
+              {
+                "name": "proto-bench events",
+                "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+                "enable": true, "iconColor": "red", "type": "tags",
+                "tags": ["protobench"]
+              }
+            ] },
+            "panels": [
+              {
+                "type": "row", "title": "Transport & codec latency",
+                "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+              },
+              {
+                "type": "timeseries",
+                "title": "Round-trip latency p50/p99 (driver, by transport/codec/pool)",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+                "targets": [
+                  { "expr": "histogram_quantile(0.5, sum by (le,transport,codec,pool) (rate(mbbench_rtt_seconds_bucket[$__rate_interval])))", "legendFormat": "p50 {{transport}}/{{codec}}/{{pool}}", "refId": "A" },
+                  { "expr": "histogram_quantile(0.99, sum by (le,transport,codec,pool) (rate(mbbench_rtt_seconds_bucket[$__rate_interval])))", "legendFormat": "p99 {{transport}}/{{codec}}/{{pool}}", "refId": "B" }
+                ]
+              },
+              {
+                "type": "timeseries",
+                "title": "Server-side + codec-only time p99 (s)",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+                "targets": [
+                  { "expr": "histogram_quantile(0.99, sum by (le,transport,codec) (rate(mbbench_server_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "server {{transport}}/{{codec}}", "refId": "A" },
+                  { "expr": "histogram_quantile(0.99, sum by (le,codec,pool) (rate(mbbench_codec_seconds_bucket[$__rate_interval])))", "legendFormat": "codec {{codec}}/{{pool}}", "refId": "B" }
+                ]
+              },
+              {
+                "type": "row", "title": "GC & allocation pressure",
+                "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+              },
+              {
+                "type": "timeseries",
+                "title": "Heap allocation rate (bytes/s, by job)",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+                "targets": [
+                  { "expr": "sum by (job) (rate(go_gc_heap_allocs_bytes_total{job=~\"proto-bench-driver|workloads-agents\"}[$__rate_interval]))", "legendFormat": "{{job}}", "refId": "A" }
+                ]
+              },
+              {
+                "type": "timeseries",
+                "title": "Allocated objects per sent message (driver)",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+                "targets": [
+                  { "expr": "sum(rate(go_gc_heap_allocs_objects_total{job=\"proto-bench-driver\"}[$__rate_interval])) / clamp_min(sum(rate(mbbench_messages_total{job=\"proto-bench-driver\",result=\"sent\"}[$__rate_interval])), 1)", "legendFormat": "alloc objects / msg", "refId": "A" }
+                ]
+              },
+              {
+                "type": "timeseries",
+                "title": "GC pause p99 (s, by job)",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+                "targets": [
+                  { "expr": "histogram_quantile(0.99, sum by (le,job) (rate(go_gc_pauses_seconds_bucket{job=~\"proto-bench-driver|workloads-agents\"}[$__rate_interval])))", "legendFormat": "{{job}}", "refId": "A" }
+                ]
+              },
+              {
+                "type": "timeseries",
+                "title": "GOGC (percent, by job) — reflects the harness GC-profile patch",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+                "targets": [
+                  { "expr": "go_gc_gogc_percent{job=~\"proto-bench-driver|workloads-agents\"}", "legendFormat": "{{job}} {{instance}}", "refId": "A" }
+                ]
+              },
+              {
+                "type": "row", "title": "Integrity & throughput",
+                "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }
+              },
+              {
+                "type": "timeseries",
+                "title": "Messages rate by result (msg/s)",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
+                "targets": [
+                  { "expr": "sum by (result) (rate(mbbench_messages_total[$__rate_interval]))", "legendFormat": "{{result}}", "refId": "A" }
+                ]
+              },
+              {
+                "type": "timeseries",
+                "title": "Errors rate by kind (msg/s) — missing/timeout/transport in fault mode",
+                "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "cps" }, "overrides": [] },
+                "targets": [
+                  { "expr": "sum by (kind) (rate(mbbench_errors_total[$__rate_interval]))", "legendFormat": "{{kind}}", "refId": "A" }
+                ]
+              },
+              {
+                "type": "timeseries",
+                "title": "Wire bytes rate by direction (bytes/s)",
+                "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+                "datasource": { "type": "prometheus", "uid": "Prometheus" },
+                "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+                "targets": [
+                  { "expr": "sum by (direction) (rate(mbbench_wire_bytes_total[$__rate_interval]))", "legendFormat": "{{direction}}", "refId": "A" }
+                ]
+              }
+            ]
+          }
+    '';
+  };
+}
