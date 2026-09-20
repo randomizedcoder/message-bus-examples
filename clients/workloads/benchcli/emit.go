@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ type cellResult struct {
 	inflight  int
 	rate      float64
 	lateSends int64
+	sat       *satResult // saturation ramp verdict (nil for other modes; print-only)
 }
 
 // cellID is the run.json cell key: transport/codec/fixture/pool/gc/mode
@@ -92,6 +94,40 @@ func emitCell(e emitOptions, c harness.Cell, r cellResult) error {
 		return err
 	}
 	return os.WriteFile(e.out, b, 0o644)
+}
+
+// printRunExtras prints the mode-specific tail lines a plain summary omits: the
+// late-send count for any open-loop run, and the saturation ramp verdict (the
+// knee, the floor it was measured against, and where/why the ramp stopped).
+func printRunExtras(r cellResult) {
+	if r.lateSends > 0 {
+		fmt.Printf("  late sends      %d\n", r.lateSends)
+	}
+	if r.sat == nil {
+		return
+	}
+	s := r.sat
+	if s.knee > 0 {
+		fmt.Printf("  saturation knee %.0f req/s (floor p99 %s; ramp stopped at %.0f req/s: %s)\n",
+			s.knee, d(s.floor), s.stopRate, satReason(s.reason))
+	} else {
+		fmt.Printf("  saturation knee none — base %.0f req/s already saturates (floor p99 %s; %s)\n",
+			s.stopRate, d(s.floor), satReason(s.reason))
+	}
+}
+
+// satReason expands the saturation stop code into a human phrase.
+func satReason(reason string) string {
+	switch reason {
+	case "p99":
+		return "p99 exceeded 10× floor"
+	case "late":
+		return "late_sends exceeded 1%"
+	case "cap":
+		return "ramp cap reached without saturating"
+	default:
+		return reason
+	}
 }
 
 // wireLen is the on-wire byte size of m under the run's codec (the request
