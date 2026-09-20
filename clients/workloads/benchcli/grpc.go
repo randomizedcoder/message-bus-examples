@@ -30,8 +30,8 @@ type hasEnvelope interface{ GetEnvelope() *workloadsv1.Envelope }
 // DeployRequest fixtures→Deploy), measuring monotonic RTT and recording the
 // mbbench_* instruments. It is the transport counterpart to `benchcli codec`
 // and shares the exact codec + pool code, so the numbers are comparable
-// (design §6). -mode selects the run mode (latency|windowed|openloop|saturation,
-// §8.2); the shared driver in drive.go implements them.
+// (design §6). -mode selects the run mode (latency|windowed|openloop|saturation|
+// coldstart, §8.2); the shared driver in drive.go implements them.
 func runGRPC(args []string) error {
 	fs := flag.NewFlagSet("grpc", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:30710", "region-agent gRPC address (host:port)")
@@ -50,12 +50,13 @@ func runGRPC(args []string) error {
 	repeat := fs.Int("repeat", 0, "repeat index for the emitted cell record")
 	out := fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)")
 	hgrm := fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)")
-	runMode := fs.String("mode", "latency", "run mode: latency|windowed|openloop|saturation (design §8.2)")
+	runMode := fs.String("mode", "latency", "run mode: latency|windowed|openloop|saturation|coldstart (design §8.2)")
 	inflight := fs.Int("inflight", 0, "in-flight concurrency (0 = mode default: latency 1; windowed needs >=2; openloop/saturation cap 1024)")
 	rate := fs.Float64("rate", 0, "offered load in req/s (openloop); base rate the ramp doubles from (saturation)")
 	duration := fs.Duration("duration", 30*time.Second, "wall-clock budget for open-loop modes")
 	step := fs.Duration("step", 10*time.Second, "per-ramp-step window (saturation)")
 	floor := fs.Duration("floor", 0, "reference p99 for the saturation ceiling (0 = measure from the first ramp step)")
+	conns := fs.Int("conns", 0, "fresh connections to sample (coldstart; 0 = 20)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -105,10 +106,19 @@ func runGRPC(args []string) error {
 	rc := &reqCell{
 		requester: req0, reqProto: req, newResp: newResp,
 		cenum: codecEnum, tenum: workloadsv1.Transport_TRANSPORT_GRPC_UNARY, inst: inst, cell: cell,
+		// coldstart dials a fresh channel per sample; teardown closes it.
+		dial: func() (transport.Requester, func(), error) {
+			cc, err := grpctransport.Dial(*addr, opts, *compression)
+			if err != nil {
+				return nil, nil, err
+			}
+			r := grpctransport.NewRequester(cc)
+			return r, func() { r.Close(); cc.Close() }, nil
+		},
 	}
 	cfg := driveConfig{
 		mode: *runMode, n: *n, inflight: *inflight, rate: *rate,
-		duration: *duration, step: *step, floor: *floor,
+		duration: *duration, step: *step, floor: *floor, conns: *conns,
 		timeout: *timeout, runID: *runID, fixture: *fixtureName,
 	}
 	res, err := drive(context.Background(), rc, cfg, wireLen(cdc, req))

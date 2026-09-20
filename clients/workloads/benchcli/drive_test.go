@@ -14,6 +14,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/envelope"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/harness"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/metrics"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/transport"
 )
 
 // echoRequester is an in-process transport.Requester that echoes the request's
@@ -101,6 +102,8 @@ func TestDriveConfigValidate(t *testing.T) {
 		{"saturation defaults the inflight cap", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, inflight: 0}, false, defaultOpenInflight},
 		{"saturation honours an explicit cap", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, inflight: 8}, false, 8},
 		{"saturation rejects a negative floor", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, floor: -1}, true, 0},
+		{"coldstart inflight=0 defaults to 1", driveConfig{mode: modeColdstart, conns: 20, inflight: 0}, false, 1},
+		{"coldstart rejects inflight>1", driveConfig{mode: modeColdstart, conns: 20, inflight: 4}, true, 0},
 		{"unknown mode is rejected", driveConfig{mode: "bogus", n: 10, inflight: 1}, true, 0},
 	}
 	for _, tt := range tests {
@@ -341,6 +344,67 @@ func TestRamp(t *testing.T) {
 				t.Error("the reported step must carry a non-empty histogram")
 			}
 		})
+	}
+}
+
+func TestRunColdstart(t *testing.T) {
+	tests := []struct {
+		description   string
+		conns         int
+		dialFailEvery int64
+		wantSamples   int64
+		wantConnErr   int
+		wantDials     int64
+		wantTeardowns int64
+	}{
+		{"dials conns times and records each first request", 20, 0, 20, 0, 20, 20},
+		{"conns 0 defaults to 20 fresh connections", 0, 0, 20, 0, 20, 20},
+		{"a failed dial is a connect error, not a sample and not torn down", 10, 3, 7, 3, 10, 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			er := &echoRequester{}
+			var dials, teardowns atomic.Int64
+			rc := newTestCell(t, er, modeColdstart)
+			rc.dial = func() (transport.Requester, func(), error) {
+				n := dials.Add(1)
+				if tt.dialFailEvery > 0 && n%tt.dialFailEvery == 0 {
+					return nil, nil, errors.New("dial failed")
+				}
+				return er, func() { teardowns.Add(1) }, nil
+			}
+			cfg := driveConfig{mode: modeColdstart, conns: tt.conns, timeout: time.Second}
+			res, err := drive(context.Background(), rc, cfg, 100)
+			if err != nil {
+				t.Fatalf("drive: %v", err)
+			}
+			if got := res.hdr.Count(); got != tt.wantSamples {
+				t.Errorf("recorded samples = %d, want %d", got, tt.wantSamples)
+			}
+			if got := res.hdr.NumErrors(); got != tt.wantConnErr {
+				t.Errorf("connect errors = %d, want %d", got, tt.wantConnErr)
+			}
+			if got := dials.Load(); got != tt.wantDials {
+				t.Errorf("dials = %d, want %d", got, tt.wantDials)
+			}
+			if got := teardowns.Load(); got != tt.wantTeardowns {
+				t.Errorf("teardowns = %d, want %d (a failed dial must not be torn down)", got, tt.wantTeardowns)
+			}
+			if res.inflight != 1 {
+				t.Errorf("reported inflight = %d, want 1", res.inflight)
+			}
+		})
+	}
+}
+
+func TestRunColdstartNoDialer(t *testing.T) {
+	// A transport that cannot re-dial (dial == nil) must reject coldstart rather
+	// than silently measure the shared warm connection.
+	er := &echoRequester{}
+	rc := newTestCell(t, er, modeColdstart) // newTestCell leaves rc.dial nil
+	cfg := driveConfig{mode: modeColdstart, conns: 5, timeout: time.Second}
+	if _, err := drive(context.Background(), rc, cfg, 100); err == nil {
+		t.Fatal("coldstart without a dialer should error")
 	}
 }
 
