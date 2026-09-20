@@ -479,10 +479,22 @@ allocation cuts and natscli core-publish flush batching).
 > on the bridged MQTT brokers is the slow path (give MQTT a small `--count`).
 > See the MQTT note in [docs/benchmarks.md](docs/benchmarks.md).
 
-A third benchmark track — Protobuf vs ProtoJSON codecs, gRPC unary/streaming
-and the four buses carrying the same schema, with `sync.Pool`-based
-allocation control on both ends — is designed (not yet implemented) in
-[docs/protobuf-grpc-benchmark-design.md](docs/protobuf-grpc-benchmark-design.md).
+A third benchmark track — Protobuf vs ProtoJSON codecs, gRPC unary and the four
+buses carrying the same schema, with `sync.Pool`-based allocation control on
+both ends — is driven by the `k8s-proto-bench` host harness:
+
+```bash
+nix run .#k8s-proto-bench                   # curated default matrix (report, don't assert)
+nix run .#k8s-proto-bench -- --dry-run      # print the plan and exit (offline)
+```
+
+It sweeps transport × codec × fixture × pool × gc × mode
+(latency/windowed/openloop/saturation/coldstart/fault), writes
+`run.json`/`results.md`/`hgrm/` under `proto-bench-logs/`, and drives a
+Grafana dashboard (uid `protobench`). See
+[docs/proto-bench.md](docs/proto-bench.md) for the operator guide and
+[docs/protobuf-grpc-benchmark-design.md](docs/protobuf-grpc-benchmark-design.md)
+for the full design.
 
 ---
 
