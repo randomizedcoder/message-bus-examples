@@ -118,11 +118,11 @@ func runMQTT(args []string) error {
 	defer br.inst.SetActiveCell(ctx, br.cell, false)
 	sample := br.corpus.Telemetry(3)
 	env := sample.GetEnvelope()
-	var lat harness.Latencies
+	lat := harness.NewHDR()
 	start := time.Now()
 	for i := 0; i < *f.n; i++ {
 		if err := envelope.Fill(env, *f.runID, uint64(i), br.cenum, br.tenum, "telemetry"); err != nil {
-			lat.AddError()
+			lat.AddErrorKind("encode")
 			continue
 		}
 		pctx, cancel := context.WithTimeout(ctx, *f.timeout)
@@ -132,7 +132,7 @@ func runMQTT(args []string) error {
 		cancel()
 		br.inst.Message(ctx, br.cell, harness.ResultSent)
 		if err != nil {
-			lat.AddError()
+			lat.AddErrorKind("transport")
 			br.inst.Error(ctx, br.cell, "transport")
 			if lat.NumErrors() <= 3 {
 				fmt.Fprintf(os.Stderr, "publish %d: %v\n", i, err)
@@ -142,20 +142,22 @@ func runMQTT(args []string) error {
 		rel()
 		br.inst.Message(ctx, br.cell, harness.ResultReceived)
 		br.inst.RTT(ctx, br.cell, d)
-		lat.Add(d)
+		lat.Record(d)
 	}
 	elapsed := time.Since(start)
 	printBusSummary("mqtt (publish)", *f.addr, br.cell, lat.Summarize(elapsed), elapsed)
-	return nil
+	return emitCell(f.emit(), br.cell, lat, elapsed, wireLen(br.opts.Codec, sample), 1, 0)
 }
 
-// runAndPrint times the shared RPC loop and prints the summary.
+// runAndPrint times the shared RPC loop, prints the summary, and (when the
+// harness passed -out/-hgrm) emits the per-cell record + histogram. inflight is
+// 1 and rate 0 in latency mode; the richer run modes fill both in P4b-2b.
 func runAndPrint(kind, addr string, br *busRun, req proto.Message, newResp func() proto.Message, f *busFlags) error {
 	start := time.Now()
 	lat := br.runReqLoop(req, newResp, *f.n, *f.runID, *f.fixture, *f.timeout)
 	elapsed := time.Since(start)
 	printBusSummary(kind, addr, br.cell, lat.Summarize(elapsed), elapsed)
-	return nil
+	return emitCell(f.emit(), br.cell, lat, elapsed, wireLen(br.opts.Codec, req), 1, 0)
 }
 
 // newValkeyClient builds a Sentinel FailoverClient when sentinels is set, else a

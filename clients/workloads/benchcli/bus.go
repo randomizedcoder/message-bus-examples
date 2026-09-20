@@ -34,6 +34,9 @@ type busFlags struct {
 	seed                         *uint64
 	timeout                      *time.Duration
 	validate                     *bool
+	gc                           *string
+	repeat                       *int
+	out, hgrm                    *string
 }
 
 func newBusFlags(name, defaultAddr, defaultFixture string) *busFlags {
@@ -55,7 +58,16 @@ func newBusFlags(name, defaultAddr, defaultFixture string) *busFlags {
 		seed:        fs.Uint64("seed", 42, "corpus seed"),
 		timeout:     fs.Duration("timeout", 5*time.Second, "per-request timeout"),
 		validate:    fs.Bool("validate", false, "protovalidate each response"),
+		gc:          fs.String("gc", "default", "gc profile label for the cell id (default|limit)"),
+		repeat:      fs.Int("repeat", 0, "repeat index for the emitted cell record"),
+		out:         fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)"),
+		hgrm:        fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)"),
 	}
+}
+
+// emit returns the -out/-hgrm/-repeat knobs as emitOptions.
+func (b *busFlags) emit() emitOptions {
+	return emitOptions{out: *b.out, hgrm: *b.hgrm, repeat: *b.repeat}
 }
 
 // setup resolves the codec/pool/fixture/options and builds the metrics
@@ -84,7 +96,7 @@ func (b *busFlags) setup(transportLabel, mode string, tenum workloadsv1.Transpor
 	}
 	cell := harness.Cell{
 		Transport: transportLabel, Codec: *b.codecName, Fixture: *b.fixture, Pool: pmode.String(),
-		Mode: mode, Region: *b.region, Role: "client", Tier: tierForTransport(tenum),
+		GC: *b.gc, Mode: mode, Region: *b.region, Role: "client", Tier: tierForTransport(tenum),
 	}
 	return &busRun{opts: opts, inst: inst, cell: cell, cenum: cenum, tenum: tenum, corpus: corpus.New(*b.seed)}, nil
 }
@@ -118,16 +130,16 @@ func tierForTransport(t workloadsv1.Transport) string {
 // the Requester, records RTT + the mbbench_* counters, and verifies the reply
 // echoes the request's message_id (the cheap per-message correctness check —
 // the response survived the codec + transport round trip; design §9.4).
-func (r *busRun) runReqLoop(req proto.Message, newResp func() proto.Message, n int, runID, fixture string, timeout time.Duration) harness.Latencies {
+func (r *busRun) runReqLoop(req proto.Message, newResp func() proto.Message, n int, runID, fixture string, timeout time.Duration) *harness.HDR {
 	ctx := context.Background()
 	r.inst.SetActiveCell(ctx, r.cell, true)
 	defer r.inst.SetActiveCell(ctx, r.cell, false)
 	env := req.(hasEnvelope).GetEnvelope()
 	resp := newResp()
-	var lat harness.Latencies
+	lat := harness.NewHDR()
 	for i := 0; i < n; i++ {
 		if err := envelope.Fill(env, runID, uint64(i), r.cenum, r.tenum, fixture); err != nil {
-			lat.AddError()
+			lat.AddErrorKind("encode")
 			continue
 		}
 		proto.Reset(resp)
@@ -138,7 +150,7 @@ func (r *busRun) runReqLoop(req proto.Message, newResp func() proto.Message, n i
 		cancel()
 		r.inst.Message(ctx, r.cell, harness.ResultSent)
 		if err != nil {
-			lat.AddError()
+			lat.AddErrorKind("transport")
 			r.inst.Error(ctx, r.cell, "transport")
 			if lat.NumErrors() <= 3 {
 				fmt.Fprintf(os.Stderr, "message %d: %v\n", i, err)
@@ -146,13 +158,13 @@ func (r *busRun) runReqLoop(req proto.Message, newResp func() proto.Message, n i
 			continue
 		}
 		if re := envelope.Of(resp); re == nil || !bytes.Equal(re.GetMessageId(), env.GetMessageId()) {
-			lat.AddError()
+			lat.AddErrorKind("corrupt")
 			r.inst.Error(ctx, r.cell, "corrupt")
 			continue
 		}
 		r.inst.Message(ctx, r.cell, harness.ResultReceived)
 		r.inst.RTT(ctx, r.cell, rtt)
-		lat.Add(rtt)
+		lat.Record(rtt)
 	}
 	return lat
 }
