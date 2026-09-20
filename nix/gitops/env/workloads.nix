@@ -19,10 +19,24 @@
 { pkgs, lib }:
 let
   constants = import ../../constants.nix;
-  wl = constants.messageBus.workloads;
+  mb = constants.messageBus;
+  wl = mb.workloads;
   ns = wl.namespace;
   g  = toString wl.grpcPort;
   m  = toString wl.metricsPort;
+  domain = "svc.${constants.k8s.clusterDomain}";
+
+  # In-cluster bus endpoints the agent's responders/consumers connect to
+  # (design §3.9). NATS + MQTT are unauthenticated; the RabbitMQ user/pass reach
+  # the URL via $(VAR) expansion from the rabbitmq-credentials Secret (envFrom),
+  # and the Valkey password via VALKEY_PASSWORD (secretKeyRef) — both replicated
+  # into the workloads namespace by nix/secrets.nix.
+  natsURL = "nats://nats.${mb.nats.namespace}.${domain}:${toString mb.nats.clientPort}";
+  amqpURL = "amqp://$(RABBITMQ_DEFAULT_USER):$(RABBITMQ_DEFAULT_PASS)@rabbitmq.${mb.rabbitmq.namespace}.${domain}:${toString mb.rabbitmq.amqpPort}/";
+  mqttAddr = "mqtt.${mb.mqtt.namespace}.${domain}:${toString mb.mqtt.mqttPort}";
+  valkeySentinels = builtins.concatStringsSep "," (map
+    (i: "valkey-${toString i}.valkey-headless.${mb.valkey.namespace}.${domain}:${toString mb.valkey.sentinelPort}")
+    (lib.range 0 (mb.valkey.replicas - 1)));
 
   # One entry per node, in nodeNames order so the NodePort index is stable.
   agents = lib.imap0 (i: node: {
@@ -69,11 +83,23 @@ let
               - -metrics-addr=:${m}
               - -codec=proto
               - -pool=all
+              - -nats=${natsURL}
+              - -amqp=${amqpURL}
+              - -valkey-sentinels=${valkeySentinels}
+              - -mqtt=${mqttAddr}
               env:
               - name: REGION
                 value: ${a.region}
               - name: GOGC
                 value: "100"
+              - name: VALKEY_PASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: valkey-credentials
+                    key: password
+              envFrom:
+              - secretRef:
+                  name: rabbitmq-credentials
               ports:
               - containerPort: ${g}
                 name: grpc

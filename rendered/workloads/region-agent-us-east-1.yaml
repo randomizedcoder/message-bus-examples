@@ -31,11 +31,23 @@ spec:
         - -metrics-addr=:9464
         - -codec=proto
         - -pool=all
+        - -nats=nats://nats.nats.svc.cluster.local:4222
+        - -amqp=amqp://$(RABBITMQ_DEFAULT_USER):$(RABBITMQ_DEFAULT_PASS)@rabbitmq.rabbitmq.svc.cluster.local:5672/
+        - -valkey-sentinels=valkey-0.valkey-headless.valkey.svc.cluster.local:26379,valkey-1.valkey-headless.valkey.svc.cluster.local:26379,valkey-2.valkey-headless.valkey.svc.cluster.local:26379
+        - -mqtt=mqtt.mqtt.svc.cluster.local:1883
         env:
         - name: REGION
           value: us-east-1
         - name: GOGC
           value: "100"
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: valkey-credentials
+              key: password
+        envFrom:
+        - secretRef:
+            name: rabbitmq-credentials
         ports:
         - containerPort: 9090
           name: grpc
