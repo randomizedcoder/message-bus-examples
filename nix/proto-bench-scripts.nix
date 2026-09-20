@@ -11,6 +11,10 @@
 # agent env (`kubectl set env`) and wait rollout, then per cell × repeat post a
 # Grafana annotation, run benchcli under `taskset`, and append the cell record
 # (enriched with the agent's GC columns from Prometheus) to run.json; (5) render.
+# `fault` cells additionally kill the target pod (the driven region's agent for
+# gRPC, the broker's pod-0 for a bus) partway through the window and post a
+# `fault`-tagged annotation, then wait for it to recover before the next repeat
+# (design §8.2 — reuses the chaos idea from nix/chaos-scripts.nix).
 #
 #   nix run .#k8s-proto-bench                         # curated default matrix
 #   nix run .#k8s-proto-bench -- --dry-run            # print the plan, run nothing
@@ -108,7 +112,8 @@ Matrix (comma-separated subsets):
   --fixtures=LIST    tiny,small,medium,large,…           (default: $FIXTURES)
   --pools=LIST       none,messages,buffers,all           (default: $POOLS)
   --gc=LIST          default,limit                       (default: $GCS)
-  --modes=LIST       latency,windowed,openloop,saturation,coldstart (default: $MODES)
+  --modes=LIST       latency,windowed,openloop,saturation,coldstart,fault (default: $MODES)
+                     (fault kills the target pod mid-window; opt-in only)
   --regions=LIST     region label(s); cells drive the FIRST, all are clock-probed
                                                          (default: $REGIONS)
 Run knobs:
@@ -280,6 +285,61 @@ EOF
           >/dev/null 2>&1 || true
       }
 
+      # ─── fault-mode pod-kill orchestration (design §8.2) ─────────────
+      # fault_kill_delay: how long into the window to wait before the kill, so
+      # the cell captures a pre-fault baseline then the disruption + recovery.
+      # ~1/3 of the open-loop duration (min 1s); parses s/m suffixes.
+      fault_kill_delay() {
+        local d="$DURATION" secs
+        case "$d" in
+          *s) secs="''${d%s}" ;;
+          *m) secs=$(( ''${d%m} * 60 )) ;;
+          *)  secs="$d" ;;
+        esac
+        [[ "$secs" =~ ^[0-9]+$ ]] || secs=15
+        local k=$(( secs / 3 )); [ "$k" -lt 1 ] && k=1; echo "$k"
+      }
+
+      # fault_target TRANSPORT → sets FAULT_NS + FAULT_TARGET[] (kubectl operand
+      # for the pod to kill): the driven region's agent for gRPC, the broker's
+      # pod-0 for a bus. Returns 1 for transports with no fault target (mqtt).
+      fault_target() {
+        case "$1" in
+          grpc)     FAULT_NS="${wl.namespace}";          FAULT_TARGET=(pod -l "app=region-agent-$DRIVE_REGION") ;;
+          nats)     FAULT_NS="${mb.nats.namespace}";     FAULT_TARGET=(pod/nats-0) ;;
+          rabbitmq) FAULT_NS="${mb.rabbitmq.namespace}"; FAULT_TARGET=(pod/rabbitmq-0) ;;
+          valkey)   FAULT_NS="${mb.valkey.namespace}";   FAULT_TARGET=(pod/valkey-0) ;;
+          *) return 1 ;;
+        esac
+      }
+
+      # fault_kill TRANSPORT — delete the target pod (best-effort, non-blocking)
+      # and post a fault-tagged point annotation at the kill instant.
+      fault_kill() {
+        local FAULT_NS; local -a FAULT_TARGET=()
+        fault_target "$1" || { log "WARN: no fault target for $1"; return 0; }
+        local now; now=$(date +%s%3N)
+        log "fault: killing $1 target (''${FAULT_TARGET[*]}) in ns=$FAULT_NS"
+        kexec kubectl -n "$FAULT_NS" delete "''${FAULT_TARGET[@]}" --wait=false >/dev/null 2>&1 || \
+          log "WARN: fault kill failed for $1"
+        curl -s --max-time 5 -XPOST "$GRAFANA_URL/api/annotations" \
+          -H 'Content-Type: application/json' \
+          -d "$(jq -n --argjson t "$now" --arg run "$RUN_ID" --arg txt "fault kill: $1 ''${FAULT_TARGET[*]}" \
+                '{dashboardUID:"protobench", time:$t, tags:["protobench","fault","run:\($run)"], text:$txt}')" \
+          >/dev/null 2>&1 || true
+      }
+
+      # fault_recover TRANSPORT — wait (bounded, best-effort) for the killed
+      # target to come back Ready, so the next repeat starts from a clean state.
+      fault_recover() {
+        case "$1" in
+          grpc)     kexec kubectl -n ${wl.namespace} rollout status deploy/region-agent-"$DRIVE_REGION" --timeout=60s >/dev/null 2>&1 || true ;;
+          nats)     kexec kubectl -n ${mb.nats.namespace} wait --for=condition=Ready pod/nats-0 --timeout=60s >/dev/null 2>&1 || true ;;
+          rabbitmq) kexec kubectl -n ${mb.rabbitmq.namespace} wait --for=condition=Ready pod/rabbitmq-0 --timeout=60s >/dev/null 2>&1 || true ;;
+          valkey)   kexec kubectl -n ${mb.valkey.namespace} wait --for=condition=Ready pod/valkey-0 --timeout=90s >/dev/null 2>&1 || true ;;
+        esac
+      }
+
       # ─── benchcli invocation for one cell/repeat ─────────────────────
       # Emits the per-cell record to cells/<id>-<rep>.json and the histogram to
       # hgrm/<id>-<rep>.hgrm (paths relative to RUN_DIR). Returns benchcli's rc.
@@ -297,6 +357,7 @@ EOF
           windowed)            modeargs=(-n "$COUNT" -inflight "$INFLIGHT") ;;
           openloop)            modeargs=(-rate "$RATE_NUM" -duration "$DURATION" -inflight "$INFLIGHT") ;;
           saturation)          modeargs=(-rate "$RATE_NUM" -duration "$DURATION") ;;
+          fault)               modeargs=(-rate "$RATE_NUM" -duration "$DURATION" -inflight "$INFLIGHT") ;;
           *) log "WARN: unknown mode $mode — skipping"; return 1 ;;
         esac
 
@@ -324,6 +385,20 @@ EOF
           local ncores; ncores="$(taskset -c "$CPUSET" nproc 2>/dev/null || echo 0)"
           [ "$ncores" -gt 0 ] 2>/dev/null && export GOMAXPROCS="$ncores"
           cmd=(taskset -c "$CPUSET" "''${cmd[@]}")
+        fi
+        if [ "$mode" = "fault" ]; then
+          # Open-loop pass held straight through a pod kill: run benchcli in the
+          # background, kill the target pod partway through the window, and let
+          # the driver keep sending (it never aborts — the lost requests become
+          # the `missing` integrity counter, design §8.2/§8.4). Then wait for the
+          # driver to finish and for the target to recover before the next repeat.
+          ( cd "$RUN_DIR" && "''${cmd[@]}" ) >>"$RUN_DIR/cells/$safe.log" 2>&1 &
+          local bench_pid=$!
+          sleep "$(fault_kill_delay)"
+          fault_kill "$transport"
+          local rc=0; wait "$bench_pid" || rc=$?
+          fault_recover "$transport"
+          return "$rc"
         fi
         ( cd "$RUN_DIR" && "''${cmd[@]}" ) >>"$RUN_DIR/cells/$safe.log" 2>&1
       }
