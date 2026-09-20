@@ -104,6 +104,10 @@ func TestDriveConfigValidate(t *testing.T) {
 		{"saturation rejects a negative floor", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, floor: -1}, true, 0},
 		{"coldstart inflight=0 defaults to 1", driveConfig{mode: modeColdstart, conns: 20, inflight: 0}, false, 1},
 		{"coldstart rejects inflight>1", driveConfig{mode: modeColdstart, conns: 20, inflight: 4}, true, 0},
+		{"fault needs rate>0", driveConfig{mode: modeFault, rate: 0, duration: time.Second}, true, 0},
+		{"fault needs duration>0", driveConfig{mode: modeFault, rate: 100, duration: 0}, true, 0},
+		{"fault defaults the inflight cap", driveConfig{mode: modeFault, rate: 100, duration: time.Second, inflight: 0}, false, defaultOpenInflight},
+		{"fault honours an explicit cap", driveConfig{mode: modeFault, rate: 100, duration: time.Second, inflight: 16}, false, 16},
 		{"unknown mode is rejected", driveConfig{mode: "bogus", n: 10, inflight: 1}, true, 0},
 	}
 	for _, tt := range tests {
@@ -201,6 +205,46 @@ func TestDriveOpenLoopLateSends(t *testing.T) {
 	}
 	if res.lateSends == 0 {
 		t.Error("an overloaded open-loop run should report late_sends > 0")
+	}
+}
+
+func TestDriveFault(t *testing.T) {
+	// fault is an open-loop pass that never aborts: every request that gets no
+	// valid reply during the window is folded in as an error and surfaced as a
+	// missing sequence, so the reported missing count equals the pass's error
+	// count. A clean window reports missing 0.
+	tests := []struct {
+		description string
+		failEvery   int64
+		wantMissing bool
+	}{
+		{"a clean fault window records no missing sequences", 0, false},
+		{"failures during the window are counted as missing, not fatal", 5, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			er := &echoRequester{failEvery: tt.failEvery}
+			cfg := driveConfig{mode: modeFault, rate: 2000, duration: 150 * time.Millisecond, timeout: time.Second}
+			rc := newTestCell(t, er, cfg.mode)
+			res, err := drive(context.Background(), rc, cfg, 100)
+			if err != nil {
+				t.Fatalf("drive: %v", err)
+			}
+			if res.missing != int64(res.hdr.NumErrors()) {
+				t.Errorf("missing = %d, want it to equal the error count %d", res.missing, res.hdr.NumErrors())
+			}
+			if (res.missing > 0) != tt.wantMissing {
+				t.Errorf("missing = %d, wantMissing = %v", res.missing, tt.wantMissing)
+			}
+			if res.rate != 2000 {
+				t.Errorf("reported rate = %v, want 2000 (fault holds a fixed rate)", res.rate)
+			}
+			// The summary must carry the count into the run.json integrity column.
+			sum := summaryFromHDR(rc.cell, res)
+			if sum.Missing != res.missing {
+				t.Errorf("summary missing = %d, want %d", sum.Missing, res.missing)
+			}
+		})
 	}
 }
 
