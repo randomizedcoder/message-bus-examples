@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package workloads.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1;workloadsv1";
+
+// Protocol is a closed set (enum); open sets (regions, cluster ids) are
+// validated strings. `enum.defined_only` is applied at use sites.
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;
+  PROTOCOL_TCP = 1;
+  PROTOCOL_UDP = 2;
+}
+
+message Tenant {
+  string customer_id = 1 [(buf.validate.field).string.uuid = true];
+  string project_id = 2 [(buf.validate.field).string.uuid = true];
+}
+
+message ClusterRef {
+  string region = 1 [(buf.validate.field).string.pattern = "^[a-z]{2}-[a-z]+-[0-9]$"];
+  string cluster_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 63
+  }];
+}
+
+message ResourceQuantity {
+  int64 cpu_millis = 1 [(buf.validate.field).int64 = {
+    gte: 0
+    lte: 256000
+  }];
+  int64 memory_bytes = 2 [(buf.validate.field).int64.gte = 0];
+  int64 ephemeral_storage_bytes = 3 [(buf.validate.field).int64.gte = 0];
+}
+
+message Resources {
+  ResourceQuantity requests = 1;
+  ResourceQuantity limits = 2;
+  option (buf.validate.message).cel = {
+    id: "resources.limits_ge_requests"
+    message: "limits must be >= requests for cpu and memory"
+    expression: "!has(this.limits) || !has(this.requests) || (this.limits.cpu_millis >= this.requests.cpu_millis && this.limits.memory_bytes >= this.requests.memory_bytes)"
+  };
+}
+
+message SecretRef {
+  string name = 1 [(buf.validate.field).string = {
+    max_len: 253
+    pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+  }];
+  string key = 2 [(buf.validate.field).string = {
+    max_len: 253
+    pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+  }];
+}
+
+message EnvVar {
+  string name = 1 [(buf.validate.field).string.pattern = "^[A-Za-z_][A-Za-z0-9_]*$"];
+  oneof value {
+    option (buf.validate.oneof).required = true;
+    string literal = 2 [(buf.validate.field).string.max_len = 32768];
+    SecretRef secret = 3;
+  }
+}
+
+message Port {
+  string name = 1;
+  uint32 container_port = 2 [(buf.validate.field).uint32 = {
+    gte: 1
+    lte: 65535
+  }];
+  Protocol protocol = 3 [(buf.validate.field).enum.defined_only = true];
+}
+
+message Problem {
+  string code = 1 [(buf.validate.field).string.pattern = "^[A-Z_]{3,64}$"];
+  string message = 2;
+  map<string, string> details = 3 [(buf.validate.field).map.max_pairs = 16];
+}
+
+// WorkloadRef lives here (not in workload.proto as the design table sketches)
+// so telemetry/billing/logs can reference it without importing workload.proto,
+// which itself imports telemetry.proto for ContainerState. This keeps the
+// import graph acyclic (design §3).
+message WorkloadRef {
+  Tenant tenant = 1 [(buf.validate.field).required = true];
+  string workload_id = 2 [(buf.validate.field).string.uuid = true];
+}

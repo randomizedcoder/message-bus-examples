@@ -1,0 +1,25 @@
+version: v2
+managed:
+  enabled: true
+  disable:
+    - file_option: go_package_prefix
+      module: buf.build/bufbuild/protovalidate
+plugins:
+  - local: protoc-gen-go
+    out: gen/go
+    opt:
+      - paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: gen/go
+    opt:
+      - paths=source_relative
+  # Opt-in fast path, benchmarked as its own codec profile (design §7.1).
+  - local: protoc-gen-go-vtproto
+    out: gen/go
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size+pool
+      - pool=github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1.DeployRequest
+      - pool=github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1.TelemetrySample
+      - pool=github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1.UsageRecord
+      - pool=github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1.LogChunk

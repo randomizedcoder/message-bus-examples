@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package workloads.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1;workloadsv1";
+
+enum Codec {
+  CODEC_UNSPECIFIED = 0;
+  CODEC_PROTO = 1;     // google.golang.org/protobuf/proto
+  CODEC_PROTOJSON = 2; // google.golang.org/protobuf/encoding/protojson
+  CODEC_VTPROTO = 3;   // planetscale/vtprotobuf MarshalVT/UnmarshalVT (separate profile)
+}
+
+enum Transport {
+  TRANSPORT_UNSPECIFIED = 0;
+  TRANSPORT_GRPC_UNARY = 1;
+  TRANSPORT_GRPC_SERVER_STREAM = 2;
+  TRANSPORT_GRPC_CLIENT_STREAM = 3;
+  TRANSPORT_GRPC_BIDI = 4;
+  TRANSPORT_NATS_REQUEST_REPLY = 5;
+  TRANSPORT_NATS_JETSTREAM = 6;
+  TRANSPORT_RABBITMQ_RPC = 7;
+  TRANSPORT_RABBITMQ_QUORUM = 8;
+  TRANSPORT_VALKEY_STREAM = 9;
+  TRANSPORT_MQTT = 10;
+}
+
+// Envelope is field 1 of every request / response and every bus payload.
+// The client fills 1-4 and 10-13; the responder fills 5-9 and echoes the rest.
+message Envelope {
+  string run_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9._-]+$"
+  }];
+  bytes message_id = 2 [(buf.validate.field).bytes.len = 16]; // UUIDv7, raw
+  uint64 sequence = 3;
+  google.protobuf.Timestamp client_send_time = 4 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp server_receive_time = 5;
+  google.protobuf.Timestamp server_send_time = 6;
+  // fixed32 so the envelope's wire size does not depend on the value.
+  fixed32 request_wire_bytes = 7;
+  // Empty unless the run enables integrity checking (-integrity=sha256).
+  bytes request_sha256 = 8 [(buf.validate.field).cel = {
+    id: "envelope.sha256_len"
+    message: "request_sha256 must be empty or exactly 32 bytes"
+    expression: "size(this) == 0 || size(this) == 32"
+  }];
+  string responder_id = 9 [(buf.validate.field).string.max_len = 128]; // "<region>/<pod>"
+  Codec codec = 10 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  Transport transport = 11 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string fixture = 12 [(buf.validate.field).string = {
+    in: ["tiny", "small", "medium", "large", "max", "sparse", "dense"]
+  }];
+  uint32 attempt = 13 [(buf.validate.field).uint32.lte = 16]; // > 0 only under fault mode
+  option (buf.validate.message).cel = {
+    id: "envelope.server_times_ordered"
+    message: "server_send_time must not precede server_receive_time"
+    expression: "!has(this.server_send_time) || !has(this.server_receive_time) || this.server_send_time >= this.server_receive_time"
+  };
+}
+
+// Smallest possible round trip: the "codec floor" measurement.
+message PingRequest {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+}
+
+message PingResponse {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+}
+
+// NTP-style four-timestamp probe:
+//   offset      = ((t2 - t1) + (t3 - t4)) / 2
+//   uncertainty = (t4 - t1) - (t3 - t2)
+message ClockProbeRequest {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp t1 = 2 [(buf.validate.field).required = true];
+}
+
+message ClockProbeResponse {
+  Envelope envelope = 1 [(buf.validate.field).required = true];
+  google.protobuf.Timestamp t1 = 2;
+  google.protobuf.Timestamp t2 = 3; // server receive
+  google.protobuf.Timestamp t3 = 4; // server send
+  string clock_source = 5;          // /sys/devices/system/clocksource/clocksource0/current_clocksource
+  bool chrony_synced = 6;           // chronyc tracking: "Leap status: Normal"
+}
+
+service BenchService {
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc ClockProbe(ClockProbeRequest) returns (ClockProbeResponse);
+}
