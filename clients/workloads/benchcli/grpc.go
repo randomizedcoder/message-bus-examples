@@ -13,7 +13,6 @@ import (
 	workloadsv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/workloads/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/codec"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/corpus"
-	"github.com/randomizedcoder/message-bus-examples/clients/internal/envelope"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/harness"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/metrics"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/pool"
@@ -31,8 +30,8 @@ type hasEnvelope interface{ GetEnvelope() *workloadsv1.Envelope }
 // DeployRequest fixtures→Deploy), measuring monotonic RTT and recording the
 // mbbench_* instruments. It is the transport counterpart to `benchcli codec`
 // and shares the exact codec + pool code, so the numbers are comparable
-// (design §6). Open-loop / windowed modes and HDR output arrive with the host
-// harness in P4.
+// (design §6). -mode selects the run mode (latency|windowed|openloop, §8.2);
+// the shared driver in drive.go implements them.
 func runGRPC(args []string) error {
 	fs := flag.NewFlagSet("grpc", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:30710", "region-agent gRPC address (host:port)")
@@ -51,6 +50,10 @@ func runGRPC(args []string) error {
 	repeat := fs.Int("repeat", 0, "repeat index for the emitted cell record")
 	out := fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)")
 	hgrm := fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)")
+	runMode := fs.String("mode", "latency", "run mode: latency|windowed|openloop (design §8.2)")
+	inflight := fs.Int("inflight", 0, "in-flight concurrency (0 = mode default: latency 1; windowed needs >=2; openloop cap 1024)")
+	rate := fs.Float64("rate", 0, "offered load in req/s (openloop)")
+	duration := fs.Duration("duration", 30*time.Second, "wall-clock budget for open-loop modes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -94,42 +97,26 @@ func runGRPC(args []string) error {
 	}
 	cell := harness.Cell{
 		Transport: "grpc_unary", Codec: *codecName, Fixture: *fixtureName, Pool: mode.String(),
-		GC: *gc, Mode: "latency", Region: *region, Role: "client", Tier: "rpc",
+		GC: *gc, Mode: *runMode, Region: *region, Role: "client", Tier: "rpc",
 	}
-	ctx := context.Background()
-	inst.SetActiveCell(ctx, cell, true)
-	defer inst.SetActiveCell(ctx, cell, false)
 
-	resp := newResp()
-	env := req.(hasEnvelope).GetEnvelope()
-	lat := harness.NewHDR()
-	start := time.Now()
-	for i := 0; i < *n; i++ {
-		if err := envelope.Fill(env, *runID, uint64(i), codecEnum, workloadsv1.Transport_TRANSPORT_GRPC_UNARY, *fixtureName); err != nil {
-			return fmt.Errorf("fill envelope: %w", err)
-		}
-		proto.Reset(resp)
-		rctx, cancel := context.WithTimeout(ctx, *timeout)
-		t0 := time.Now()
-		err := req0.Request(rctx, req, resp)
-		rtt := time.Since(t0)
-		cancel()
-		inst.Message(ctx, cell, harness.ResultSent)
-		if err != nil {
-			lat.AddErrorKind("transport")
-			inst.Error(ctx, cell, "transport")
-			if lat.NumErrors() <= 3 {
-				fmt.Fprintf(os.Stderr, "request %d: %v\n", i, err)
-			}
-			continue
-		}
-		inst.Message(ctx, cell, harness.ResultReceived)
-		inst.RTT(ctx, cell, rtt)
-		lat.Record(rtt)
+	rc := &reqCell{
+		requester: req0, reqProto: req, newResp: newResp,
+		cenum: codecEnum, tenum: workloadsv1.Transport_TRANSPORT_GRPC_UNARY, inst: inst, cell: cell,
 	}
-	elapsed := time.Since(start)
-	printGRPCSummary(*addr, cell, lat.Summarize(elapsed), elapsed)
-	return emitCell(emitOptions{out: *out, hgrm: *hgrm, repeat: *repeat}, cell, lat, elapsed, wireLen(cdc, req), 1, 0)
+	cfg := driveConfig{
+		mode: *runMode, n: *n, inflight: *inflight, rate: *rate,
+		duration: *duration, timeout: *timeout, runID: *runID, fixture: *fixtureName,
+	}
+	res, err := drive(context.Background(), rc, cfg, wireLen(cdc, req))
+	if err != nil {
+		return err
+	}
+	printGRPCSummary(*addr, cell, res.hdr.Summarize(res.elapsed), res.elapsed)
+	if res.lateSends > 0 {
+		fmt.Printf("  late sends      %d\n", res.lateSends)
+	}
+	return emitCell(emitOptions{out: *out, hgrm: *hgrm, repeat: *repeat}, cell, res)
 }
 
 // grpcPair returns the request message for the fixture and a constructor for a

@@ -27,7 +27,7 @@ func runNATS(args []string) error {
 	if err := f.fs.Parse(args); err != nil {
 		return err
 	}
-	br, err := f.setup("nats_request_reply", "latency", workloadsv1.Transport_TRANSPORT_NATS_REQUEST_REPLY)
+	br, err := f.setup("nats_request_reply", workloadsv1.Transport_TRANSPORT_NATS_REQUEST_REPLY)
 	if err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func runRabbitMQ(args []string) error {
 	if err := f.fs.Parse(args); err != nil {
 		return err
 	}
-	br, err := f.setup("rabbitmq_rpc", "latency", workloadsv1.Transport_TRANSPORT_RABBITMQ_RPC)
+	br, err := f.setup("rabbitmq_rpc", workloadsv1.Transport_TRANSPORT_RABBITMQ_RPC)
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,7 @@ func runValkey(args []string) error {
 	if err := f.fs.Parse(args); err != nil {
 		return err
 	}
-	br, err := f.setup("valkey_stream", "latency", workloadsv1.Transport_TRANSPORT_VALKEY_STREAM)
+	br, err := f.setup("valkey_stream", workloadsv1.Transport_TRANSPORT_VALKEY_STREAM)
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,10 @@ func runMQTT(args []string) error {
 	if err := f.fs.Parse(args); err != nil {
 		return err
 	}
-	br, err := f.setup("mqtt", "latency", workloadsv1.Transport_TRANSPORT_MQTT)
+	if *f.mode != modeLatency {
+		return fmt.Errorf("mqtt is fire-and-forget publish; only -mode=latency is supported (got %q)", *f.mode)
+	}
+	br, err := f.setup("mqtt", workloadsv1.Transport_TRANSPORT_MQTT)
 	if err != nil {
 		return err
 	}
@@ -146,18 +149,26 @@ func runMQTT(args []string) error {
 	}
 	elapsed := time.Since(start)
 	printBusSummary("mqtt (publish)", *f.addr, br.cell, lat.Summarize(elapsed), elapsed)
-	return emitCell(f.emit(), br.cell, lat, elapsed, wireLen(br.opts.Codec, sample), 1, 0)
+	return emitCell(f.emit(), br.cell, cellResult{hdr: lat, elapsed: elapsed, wireReq: wireLen(br.opts.Codec, sample), inflight: 1})
 }
 
-// runAndPrint times the shared RPC loop, prints the summary, and (when the
-// harness passed -out/-hgrm) emits the per-cell record + histogram. inflight is
-// 1 and rate 0 in latency mode; the richer run modes fill both in P4b-2b.
+// runAndPrint runs the configured run mode over the request/reply Requester,
+// prints the summary, and (when the harness passed -out/-hgrm) emits the
+// per-cell record + histogram (design §8.2).
 func runAndPrint(kind, addr string, br *busRun, req proto.Message, newResp func() proto.Message, f *busFlags) error {
-	start := time.Now()
-	lat := br.runReqLoop(req, newResp, *f.n, *f.runID, *f.fixture, *f.timeout)
-	elapsed := time.Since(start)
-	printBusSummary(kind, addr, br.cell, lat.Summarize(elapsed), elapsed)
-	return emitCell(f.emit(), br.cell, lat, elapsed, wireLen(br.opts.Codec, req), 1, 0)
+	rc := &reqCell{
+		requester: br.requester, reqProto: req, newResp: newResp,
+		cenum: br.cenum, tenum: br.tenum, inst: br.inst, cell: br.cell,
+	}
+	res, err := drive(context.Background(), rc, f.driveConfig(), wireLen(br.opts.Codec, req))
+	if err != nil {
+		return err
+	}
+	printBusSummary(kind, addr, br.cell, res.hdr.Summarize(res.elapsed), res.elapsed)
+	if res.lateSends > 0 {
+		fmt.Printf("  late sends      %d\n", res.lateSends)
+	}
+	return emitCell(f.emit(), br.cell, res)
 }
 
 // newValkeyClient builds a Sentinel FailoverClient when sentinels is set, else a

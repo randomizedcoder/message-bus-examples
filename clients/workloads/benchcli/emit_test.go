@@ -44,7 +44,7 @@ func TestSummaryFromHDR(t *testing.T) {
 		h.Record(time.Millisecond)
 	}
 	h.AddErrorKind("transport")
-	s := summaryFromHDR(cell, h, time.Second, 652, 1, 0)
+	s := summaryFromHDR(cell, cellResult{hdr: h, elapsed: time.Second, wireReq: 652, inflight: 1})
 
 	tests := []struct {
 		description string
@@ -93,7 +93,7 @@ func TestEmitCell(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			if err := emitCell(tt.opts, cell, h, time.Second, 652, 1, 0); err != nil {
+			if err := emitCell(tt.opts, cell, cellResult{hdr: h, elapsed: time.Second, wireReq: 652, inflight: 1}); err != nil {
 				t.Fatalf("emitCell: %v", err)
 			}
 			for _, f := range tt.wantFiles {
