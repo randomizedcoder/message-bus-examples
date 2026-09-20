@@ -13,6 +13,7 @@ let
   natsC = constants.messageBus.nats;
   rmqC  = constants.messageBus.rabbitmq;
   vkC   = constants.messageBus.valkey;
+  mqttC = constants.messageBus.mqtt;
   wlC   = constants.messageBus.workloads;
   pb    = constants.protoBench;
 
@@ -52,6 +53,14 @@ in
   redis = mkTargets (map
     (i: "valkey-${toString i}.valkey-headless.${vkC.namespace}.${domain}:${toString mon.redisExporter.port}")
     (lib.range 0 (vkC.replicas - 1)));
+
+  # mosquitto sysexporter sidecars, one per MQTT pod, scraped over the headless
+  # Service by pod FQDN (:9234). Each exporter bridges only its own broker's
+  # $SYS tree ($SYS is never bridged), so per-pod scraping gives per-broker
+  # stats — the same per-pod pattern as the NATS/redis exporters.
+  mqtt = mkTargets (map
+    (i: "mqtt-${toString i}.mqtt-headless.${mqttC.namespace}.${domain}:${toString mon.mosquittoExporter.port}")
+    (lib.range 0 (mqttC.replicas - 1)));
 
   # proto-bench region agents — one pod per region, each addressable by a
   # stable DNS name via the headless `region-agents` Service (hostname +

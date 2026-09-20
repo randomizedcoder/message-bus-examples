@@ -308,6 +308,15 @@ rec {
       tag   = "1.90.0";
       port  = 9121;
     };
+    # Mosquitto has no native Prometheus endpoint, so a hand-written sidecar
+    # (clients/mqtt/sysexporter, built from our own Go module like region-agent)
+    # bridges the broker's $SYS/# tree to mosquitto_* metrics — one per pod,
+    # scraped per-pod like the NATS/redis exporters (design §11.5).
+    mosquittoExporter = {
+      image = "messagebus.local/mosquitto-sysexporter";
+      tag   = "0.1.0";
+      port  = 9234;        # /metrics scraped by Prometheus
+    };
     grafana = {
       image    = "messagebus.local/grafana";
       tag      = "13.1.4";

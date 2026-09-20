@@ -46,6 +46,9 @@
           - job_name: redis
             static_configs:
               - targets: ${targets.redis}
+          - job_name: mqtt
+            static_configs:
+              - targets: ${targets.mqtt}
           - job_name: cilium-agent
             static_configs:
               - targets: ${targets.ciliumAgent}
