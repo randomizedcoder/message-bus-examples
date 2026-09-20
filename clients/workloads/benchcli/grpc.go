@@ -30,8 +30,8 @@ type hasEnvelope interface{ GetEnvelope() *workloadsv1.Envelope }
 // DeployRequest fixtures→Deploy), measuring monotonic RTT and recording the
 // mbbench_* instruments. It is the transport counterpart to `benchcli codec`
 // and shares the exact codec + pool code, so the numbers are comparable
-// (design §6). -mode selects the run mode (latency|windowed|openloop, §8.2);
-// the shared driver in drive.go implements them.
+// (design §6). -mode selects the run mode (latency|windowed|openloop|saturation,
+// §8.2); the shared driver in drive.go implements them.
 func runGRPC(args []string) error {
 	fs := flag.NewFlagSet("grpc", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:30710", "region-agent gRPC address (host:port)")
@@ -50,10 +50,12 @@ func runGRPC(args []string) error {
 	repeat := fs.Int("repeat", 0, "repeat index for the emitted cell record")
 	out := fs.String("out", "", "write the per-cell record JSON here (design §8.5; empty = off)")
 	hgrm := fs.String("hgrm", "", "write the HDR .hgrm histogram here (empty = off)")
-	runMode := fs.String("mode", "latency", "run mode: latency|windowed|openloop (design §8.2)")
-	inflight := fs.Int("inflight", 0, "in-flight concurrency (0 = mode default: latency 1; windowed needs >=2; openloop cap 1024)")
-	rate := fs.Float64("rate", 0, "offered load in req/s (openloop)")
+	runMode := fs.String("mode", "latency", "run mode: latency|windowed|openloop|saturation (design §8.2)")
+	inflight := fs.Int("inflight", 0, "in-flight concurrency (0 = mode default: latency 1; windowed needs >=2; openloop/saturation cap 1024)")
+	rate := fs.Float64("rate", 0, "offered load in req/s (openloop); base rate the ramp doubles from (saturation)")
 	duration := fs.Duration("duration", 30*time.Second, "wall-clock budget for open-loop modes")
+	step := fs.Duration("step", 10*time.Second, "per-ramp-step window (saturation)")
+	floor := fs.Duration("floor", 0, "reference p99 for the saturation ceiling (0 = measure from the first ramp step)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -106,16 +108,15 @@ func runGRPC(args []string) error {
 	}
 	cfg := driveConfig{
 		mode: *runMode, n: *n, inflight: *inflight, rate: *rate,
-		duration: *duration, timeout: *timeout, runID: *runID, fixture: *fixtureName,
+		duration: *duration, step: *step, floor: *floor,
+		timeout: *timeout, runID: *runID, fixture: *fixtureName,
 	}
 	res, err := drive(context.Background(), rc, cfg, wireLen(cdc, req))
 	if err != nil {
 		return err
 	}
 	printGRPCSummary(*addr, cell, res.hdr.Summarize(res.elapsed), res.elapsed)
-	if res.lateSends > 0 {
-		fmt.Printf("  late sends      %d\n", res.lateSends)
-	}
+	printRunExtras(res)
 	return emitCell(emitOptions{out: *out, hgrm: *hgrm, repeat: *repeat}, cell, res)
 }
 

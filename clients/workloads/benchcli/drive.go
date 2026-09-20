@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,13 +20,15 @@ import (
 // Run modes (design §8.2). latency and windowed are closed loops (each worker
 // waits for its reply before sending the next); openloop is an open loop that
 // sends at fixed intended instants regardless of replies, which is what makes
-// it coordinated-omission-free. saturation/coldstart/fault land in a later
-// slice (they need a rate ramp, a per-sample dial factory, and harness pod-kill
-// orchestration respectively).
+// it coordinated-omission-free. saturation is a ramp of open-loop passes that
+// finds the max sustainable rate (the knee). coldstart/fault land in a later
+// slice (they need a per-sample dial factory and harness pod-kill orchestration
+// respectively).
 const (
-	modeLatency  = "latency"
-	modeWindowed = "windowed"
-	modeOpenLoop = "openloop"
+	modeLatency    = "latency"
+	modeWindowed   = "windowed"
+	modeOpenLoop   = "openloop"
+	modeSaturation = "saturation"
 )
 
 // defaultOpenInflight caps outstanding open-loop requests when -inflight is 0.
@@ -39,22 +42,36 @@ const defaultOpenInflight = 1024
 // before it counts toward late_sends (design §8.2).
 const lateThreshold = time.Millisecond
 
+// Saturation ramp parameters (design §8.2): the offered rate doubles every
+// step until the p99 rises past saturationP99Mult × floor or the late-send
+// fraction exceeds saturationLateFrac; the last sustainable rate is the knee.
+// maxRampSteps bounds the ramp so an implausibly fast target still terminates
+// (late_sends fires long before this on any real transport).
+const (
+	defaultStepDuration = 10 * time.Second
+	saturationP99Mult   = 10
+	saturationLateFrac  = 0.01
+	maxRampSteps        = 24
+)
+
 // driveConfig is the run-mode configuration for one cell, parsed from the
 // transport subcommand's flags.
 type driveConfig struct {
-	mode     string        // latency | windowed | openloop
+	mode     string        // latency | windowed | openloop | saturation
 	n        int           // message budget (closed modes)
 	inflight int           // concurrent workers (closed) / max outstanding (open)
-	rate     float64       // offered msg/s (open modes)
-	duration time.Duration // wall-clock budget (open modes)
+	rate     float64       // offered msg/s (open modes); base rate for saturation
+	duration time.Duration // wall-clock budget (openloop)
+	step     time.Duration // per-ramp-step window (saturation)
+	floor    time.Duration // reference p99 for the saturation ceiling (0 = measure)
 	timeout  time.Duration // per-request timeout
 	runID    string
 	fixture  string
 }
 
-// validate checks the flag combination and normalises inflight. It rejects the
-// combinations that would silently measure the wrong thing (e.g. -inflight>1 in
-// latency mode, which is really the windowed experiment).
+// validate checks the flag combination and normalises inflight/step. It rejects
+// the combinations that would silently measure the wrong thing (e.g. -inflight>1
+// in latency mode, which is really the windowed experiment).
 func (c *driveConfig) validate() error {
 	switch c.mode {
 	case modeLatency:
@@ -84,8 +101,21 @@ func (c *driveConfig) validate() error {
 		if c.inflight <= 0 {
 			c.inflight = defaultOpenInflight
 		}
+	case modeSaturation:
+		if c.rate <= 0 {
+			return fmt.Errorf("mode=saturation needs -rate > 0 (the base rate the ramp doubles from)")
+		}
+		if c.step <= 0 {
+			c.step = defaultStepDuration
+		}
+		if c.floor < 0 {
+			return fmt.Errorf("mode=saturation needs -floor >= 0 (0 = measure the floor from the first ramp step)")
+		}
+		if c.inflight <= 0 {
+			c.inflight = defaultOpenInflight
+		}
 	default:
-		return fmt.Errorf("unknown -mode %q (latency|windowed|openloop)", c.mode)
+		return fmt.Errorf("unknown -mode %q (latency|windowed|openloop|saturation)", c.mode)
 	}
 	return nil
 }
@@ -118,17 +148,58 @@ func (rc *reqCell) newJob() *job {
 	return &job{req: req, resp: rc.newResp(), env: req.(hasEnvelope).GetEnvelope()}
 }
 
-// driver holds the shared, mutex-guarded measurement state for one cell. A
+// series is the mutex-guarded measurement state for one measurement pass. A
 // single HDR guarded by a mutex is deliberate: recording is a sub-microsecond
-// operation next to a network round-trip, so lock contention is negligible,
-// and one shared histogram avoids the per-worker histograms that would cost
-// hundreds of MB at inflight=256 or the open-loop pool size.
+// operation next to a network round-trip, so lock contention is negligible, and
+// one shared histogram avoids the per-worker histograms that would cost hundreds
+// of MB at inflight=256 or the open-loop pool size. late is written only by the
+// open-loop sender goroutine (read after its workers drain), so it needs no lock.
+type series struct {
+	mu   sync.Mutex
+	hdr  *harness.HDR
+	late int64
+}
+
+func newSeries() *series { return &series{hdr: harness.NewHDR()} }
+
+// record folds one outcome into the pass histogram under the lock. kind==""
+// is a success (rtt is recorded, CO-corrected when expected>0); otherwise it is
+// an error of that kind and no latency is recorded.
+func (s *series) record(rtt time.Duration, kind string, expected time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case kind != "":
+		s.hdr.AddErrorKind(kind)
+	case expected > 0:
+		s.hdr.RecordCorrected(rtt, expected)
+	default:
+		s.hdr.Record(rtt)
+	}
+}
+
+// sent is the number of dispatched requests folded into the pass: successes plus
+// errors (each do() records exactly one outcome). It is the denominator for the
+// late-send fraction.
+func (s *series) sent() int64 { return s.hdr.Count() + int64(s.hdr.NumErrors()) }
+
+// satResult carries the saturation ramp's verdict for the print path (it is not
+// serialised: the emitted record reports the knee as the cell rate like any
+// open-loop cell). floor is the reference p99, knee the last sustainable rate
+// (0 if the base rate already saturates), stopRate the rate the ramp stopped at,
+// and reason why ("p99" | "late" | "cap").
+type satResult struct {
+	floor    time.Duration
+	knee     float64
+	stopRate float64
+	reason   string
+}
+
+// driver holds the immutable per-cell wiring; each measurement pass gets its own
+// series so a saturation ramp can score each step independently.
 type driver struct {
-	rc        *reqCell
-	cfg       driveConfig
-	mu        sync.Mutex
-	hdr       *harness.HDR
-	lateSends int64
+	rc  *reqCell
+	cfg driveConfig
 }
 
 // drive runs the configured mode against rc and returns the finished cell
@@ -137,25 +208,38 @@ func drive(ctx context.Context, rc *reqCell, cfg driveConfig, wireReq int64) (ce
 	if err := cfg.validate(); err != nil {
 		return cellResult{}, err
 	}
-	d := &driver{rc: rc, cfg: cfg, hdr: harness.NewHDR()}
+	d := &driver{rc: rc, cfg: cfg}
 	rc.inst.SetActiveCell(ctx, rc.cell, true)
 	defer rc.inst.SetActiveCell(ctx, rc.cell, false)
-	var elapsed time.Duration
-	if cfg.mode == modeOpenLoop {
-		elapsed = d.runOpen(ctx)
-	} else {
-		elapsed = d.runClosed(ctx)
+
+	switch cfg.mode {
+	case modeSaturation:
+		elapsed, s, sr := d.runSaturation(ctx)
+		return cellResult{
+			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
+			inflight: cfg.inflight, rate: sr.knee, lateSends: s.late, sat: sr,
+		}, nil
+	case modeOpenLoop:
+		s := newSeries()
+		elapsed := d.openPass(ctx, cfg.rate, cfg.duration, s)
+		return cellResult{
+			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
+			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
+		}, nil
+	default: // latency, windowed
+		s := newSeries()
+		elapsed := d.runClosed(ctx, s)
+		return cellResult{
+			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
+			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
+		}, nil
 	}
-	return cellResult{
-		hdr: d.hdr, elapsed: elapsed, wireReq: wireReq,
-		inflight: cfg.inflight, rate: cfg.rate, lateSends: atomic.LoadInt64(&d.lateSends),
-	}, nil
 }
 
 // runClosed drives inflight workers that each send, wait for the reply, then
 // send again until the shared sequence counter reaches n. inflight=1 is the
 // latency floor; inflight>1 is the windowed concurrency sweep.
-func (d *driver) runClosed(ctx context.Context) time.Duration {
+func (d *driver) runClosed(ctx context.Context, s *series) time.Duration {
 	var seq int64 = -1
 	var wg sync.WaitGroup
 	start := time.Now()
@@ -170,7 +254,7 @@ func (d *driver) runClosed(ctx context.Context) time.Duration {
 					return
 				}
 				t0 := time.Now()
-				d.do(ctx, j, uint64(i), t0, 0)
+				d.do(ctx, s, j, uint64(i), t0, 0)
 			}
 		}()
 	}
@@ -178,14 +262,14 @@ func (d *driver) runClosed(ctx context.Context) time.Duration {
 	return time.Since(start)
 }
 
-// runOpen sends at intended instants start+i/rate, dispatching each request to
-// a bounded pool of reusable workers. Latency is measured from the intended
-// instant (not the actual send), and a send that cannot begin within
-// lateThreshold of its instant — because the pool is drained by a slow server —
-// counts toward late_sends. The CO-corrected series back-fills the samples a
-// stalled sender missed at the offered interval (design §8.2).
-func (d *driver) runOpen(ctx context.Context) time.Duration {
-	interval := time.Duration(float64(time.Second) / d.cfg.rate)
+// openPass sends at intended instants start+i/rate for the given duration,
+// dispatching each request to a bounded pool of reusable workers. Latency is
+// measured from the intended instant (not the actual send), and a send that
+// cannot begin within lateThreshold of its instant — because the pool is drained
+// by a slow server — counts toward s.late. The CO-corrected series back-fills the
+// samples a stalled sender missed at the offered interval (design §8.2).
+func (d *driver) openPass(ctx context.Context, rate float64, duration time.Duration, s *series) time.Duration {
+	interval := time.Duration(float64(time.Second) / rate)
 	if interval < 1 {
 		interval = 1
 	}
@@ -195,7 +279,7 @@ func (d *driver) runOpen(ctx context.Context) time.Duration {
 	}
 	var wg sync.WaitGroup
 	start := time.Now()
-	deadline := start.Add(d.cfg.duration)
+	deadline := start.Add(duration)
 	for seq := uint64(0); ; seq++ {
 		intended := start.Add(time.Duration(seq) * interval)
 		if !intended.Before(deadline) {
@@ -209,12 +293,12 @@ func (d *driver) runOpen(ctx context.Context) time.Duration {
 		// late_sends and the CO correction are meant to expose.
 		j := <-free
 		if time.Since(intended) > lateThreshold {
-			atomic.AddInt64(&d.lateSends, 1)
+			s.late++
 		}
 		wg.Add(1)
 		go func(j *job, seq uint64, from time.Time) {
 			defer wg.Done()
-			d.do(ctx, j, seq, from, interval)
+			d.do(ctx, s, j, seq, from, interval)
 			free <- j
 		}(j, seq, intended)
 	}
@@ -222,14 +306,95 @@ func (d *driver) runOpen(ctx context.Context) time.Duration {
 	return time.Since(start)
 }
 
+// stepSustainable reports whether one saturation ramp step holds: its p99 must
+// stay within saturationP99Mult × floor (the p99 bound is skipped when floor is
+// 0, i.e. not yet measured) and its late-send fraction within saturationLateFrac.
+// reason names the first breached bound ("p99" | "late"), empty when sustainable.
+// Both bounds are strict (a step exactly at the ceiling still holds), and p99 is
+// checked first so it wins when a saturated step trips both.
+func stepSustainable(p99, floor time.Duration, lateFrac float64) (ok bool, reason string) {
+	if floor > 0 && p99 > saturationP99Mult*floor {
+		return false, "p99"
+	}
+	if lateFrac > saturationLateFrac {
+		return false, "late"
+	}
+	return true, ""
+}
+
+// openPassFn measures one ramp step at the given rate and returns its wall time.
+// Production uses driver.openPass; tests inject a deterministic stand-in so the
+// ramp decision logic can be exercised without relying on sub-millisecond
+// wall-clock timing (which is not reproducible under `go test` load — the real
+// driver is taskset-pinned, design §8.3).
+type openPassFn func(ctx context.Context, rate float64, duration time.Duration, s *series) time.Duration
+
+// runSaturation ramps the offered rate — doubling every step — over open-loop
+// passes until stepSustainable reports a step no longer holds. The knee is the
+// last sustainable rate, which is what is reported (not the failing peak, design
+// §8.2). When -floor is 0 the floor is taken from the first, lowest-load step.
+func (d *driver) runSaturation(ctx context.Context) (time.Duration, *series, *satResult) {
+	return d.ramp(ctx, d.openPass)
+}
+
+// ramp is the timing-independent ramp loop; pass measures each step. It returns
+// the total ramp wall time, the series of the reported step (the knee, or the
+// failing first step when even the base rate saturates), and the ramp verdict.
+func (d *driver) ramp(ctx context.Context, pass openPassFn) (time.Duration, *series, *satResult) {
+	floor := d.cfg.floor
+	sr := &satResult{floor: floor}
+	var (
+		total  time.Duration
+		kneeS  *series // last sustainable step
+		lastS  *series // most recent step, sustainable or not
+		capHit = true  // ramp exhausted maxRampSteps without a failing step
+	)
+	for i := 0; i < maxRampSteps; i++ {
+		rate := d.cfg.rate * math.Pow(2, float64(i))
+		s := newSeries()
+		total += pass(ctx, rate, d.cfg.step, s)
+		lastS = s
+
+		p99 := s.hdr.Summarize(0).P99
+		if floor <= 0 && i == 0 {
+			floor = p99 // the unloaded first step defines the floor
+			sr.floor = floor
+		}
+		var lateFrac float64
+		if sent := s.sent(); sent > 0 {
+			lateFrac = float64(s.late) / float64(sent)
+		}
+
+		if ok, reason := stepSustainable(p99, floor, lateFrac); !ok {
+			sr.stopRate = rate
+			sr.reason = reason
+			capHit = false
+			break
+		}
+		sr.knee = rate
+		kneeS = s
+	}
+	if capHit {
+		// Every step up to the cap was sustainable: report the last as the knee.
+		sr.reason = "cap"
+		sr.stopRate = sr.knee
+	}
+	if kneeS == nil {
+		// Even the base rate saturated: report the failing first step so the
+		// record still carries its distribution, with knee left at 0.
+		kneeS = lastS
+	}
+	return total, kneeS, sr
+}
+
 // do issues one request for sequence seq using the worker's private job and
-// records the outcome. from is the instant RTT is measured against (the send
-// instant for closed loops, the intended instant for open-loop). expected>0
+// records the outcome into s. from is the instant RTT is measured against (the
+// send instant for closed loops, the intended instant for open-loop). expected>0
 // additionally records the coordinated-omission-corrected series.
-func (d *driver) do(ctx context.Context, j *job, seq uint64, from time.Time, expected time.Duration) {
+func (d *driver) do(ctx context.Context, s *series, j *job, seq uint64, from time.Time, expected time.Duration) {
 	rc := d.rc
 	if err := envelope.Fill(j.env, d.cfg.runID, seq, rc.cenum, rc.tenum, d.cfg.fixture); err != nil {
-		d.record(0, "encode", expected)
+		s.record(0, "encode", expected)
 		return
 	}
 	proto.Reset(j.resp)
@@ -240,31 +405,15 @@ func (d *driver) do(ctx context.Context, j *job, seq uint64, from time.Time, exp
 	rc.inst.Message(ctx, rc.cell, harness.ResultSent)
 	if err != nil {
 		rc.inst.Error(ctx, rc.cell, "transport")
-		d.record(0, "transport", expected)
+		s.record(0, "transport", expected)
 		return
 	}
 	if re := envelope.Of(j.resp); re == nil || !bytes.Equal(re.GetMessageId(), j.env.GetMessageId()) {
 		rc.inst.Error(ctx, rc.cell, "corrupt")
-		d.record(0, "corrupt", expected)
+		s.record(0, "corrupt", expected)
 		return
 	}
 	rc.inst.Message(ctx, rc.cell, harness.ResultReceived)
 	rc.inst.RTT(ctx, rc.cell, rtt)
-	d.record(rtt, "", expected)
-}
-
-// record folds one outcome into the shared histogram under the lock. kind==""
-// is a success (rtt is recorded, CO-corrected when expected>0); otherwise it is
-// an error of that kind and no latency is recorded.
-func (d *driver) record(rtt time.Duration, kind string, expected time.Duration) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	switch {
-	case kind != "":
-		d.hdr.AddErrorKind(kind)
-	case expected > 0:
-		d.hdr.RecordCorrected(rtt, expected)
-	default:
-		d.hdr.Record(rtt)
-	}
+	s.record(rtt, "", expected)
 }

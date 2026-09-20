@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,6 +97,10 @@ func TestDriveConfigValidate(t *testing.T) {
 		{"openloop needs duration>0", driveConfig{mode: modeOpenLoop, rate: 100, duration: 0}, true, 0},
 		{"openloop defaults the inflight cap", driveConfig{mode: modeOpenLoop, rate: 100, duration: time.Second, inflight: 0}, false, defaultOpenInflight},
 		{"openloop honours an explicit cap", driveConfig{mode: modeOpenLoop, rate: 100, duration: time.Second, inflight: 32}, false, 32},
+		{"saturation needs rate>0", driveConfig{mode: modeSaturation, rate: 0, step: time.Second}, true, 0},
+		{"saturation defaults the inflight cap", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, inflight: 0}, false, defaultOpenInflight},
+		{"saturation honours an explicit cap", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, inflight: 8}, false, 8},
+		{"saturation rejects a negative floor", driveConfig{mode: modeSaturation, rate: 100, step: time.Second, floor: -1}, true, 0},
 		{"unknown mode is rejected", driveConfig{mode: "bogus", n: 10, inflight: 1}, true, 0},
 	}
 	for _, tt := range tests {
@@ -193,5 +198,171 @@ func TestDriveOpenLoopLateSends(t *testing.T) {
 	}
 	if res.lateSends == 0 {
 		t.Error("an overloaded open-loop run should report late_sends > 0")
+	}
+}
+
+func TestStepSustainable(t *testing.T) {
+	const floor = time.Millisecond // ceiling is 10× → 10ms
+	tests := []struct {
+		description string
+		p99         time.Duration
+		floor       time.Duration
+		lateFrac    float64
+		wantOK      bool
+		wantReason  string
+	}{
+		{"healthy step holds", 5 * time.Millisecond, floor, 0, true, ""},
+		{"p99 exactly at the 10× ceiling still holds", 10 * time.Millisecond, floor, 0, true, ""},
+		{"p99 just past the ceiling fails on p99", 10*time.Millisecond + 1, floor, 0, false, "p99"},
+		{"late fraction exactly at 1% still holds", time.Millisecond, floor, saturationLateFrac, true, ""},
+		{"late fraction just past 1% fails on late", time.Millisecond, floor, saturationLateFrac + 1e-9, false, "late"},
+		{"unmeasured floor skips the p99 bound", time.Second, 0, 0, true, ""},
+		{"unmeasured floor still enforces the late bound", time.Second, 0, 0.5, false, "late"},
+		{"p99 wins when a saturated step trips both bounds", 50 * time.Millisecond, floor, 0.5, false, "p99"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			ok, reason := stepSustainable(tt.p99, tt.floor, tt.lateFrac)
+			if ok != tt.wantOK || reason != tt.wantReason {
+				t.Errorf("stepSustainable(%s, %s, %v) = (%v, %q), want (%v, %q)",
+					tt.p99, tt.floor, tt.lateFrac, ok, reason, tt.wantOK, tt.wantReason)
+			}
+		})
+	}
+}
+
+// fakePass returns an openPassFn that fills each step's series deterministically
+// from the offered rate: samples recorded at the returned p99, and the returned
+// late count marked late. It lets the ramp logic be tested without wall-clock
+// timing (see the comment on openPassFn).
+func fakePass(fn func(rate float64) (p99 time.Duration, late, samples int64)) openPassFn {
+	return func(_ context.Context, rate float64, _ time.Duration, s *series) time.Duration {
+		p99, late, samples := fn(rate)
+		for i := int64(0); i < samples; i++ {
+			s.record(p99, "", 0)
+		}
+		s.late = late
+		return 0
+	}
+}
+
+func TestRamp(t *testing.T) {
+	const ms = time.Millisecond
+	tests := []struct {
+		description string
+		cfg         driveConfig
+		pass        openPassFn
+		wantKnee    float64
+		wantStop    float64
+		wantReason  string
+		wantFloor   time.Duration
+	}{
+		{
+			// floor measured at the first step (1ms → 10ms ceiling); steps stay
+			// healthy through 4000, then 8000 saturates on p99.
+			description: "ramp finds a knee, then a higher step trips p99",
+			cfg:         driveConfig{rate: 1000, floor: 0},
+			pass: fakePass(func(rate float64) (time.Duration, int64, int64) {
+				if rate <= 4000 {
+					return 1 * ms, 0, 1000
+				}
+				return 50 * ms, 0, 1000
+			}),
+			wantKnee: 4000, wantStop: 8000, wantReason: "p99", wantFloor: 1 * ms,
+		},
+		{
+			// The base step's late fraction already exceeds 1%: no rate sustains,
+			// so the knee is 0 and the failing first step is reported.
+			description: "base rate already saturates on late → knee 0",
+			cfg:         driveConfig{rate: 1000, floor: 0},
+			pass: fakePass(func(rate float64) (time.Duration, int64, int64) {
+				return 1 * ms, 500, 1000 // 50% late
+			}),
+			wantKnee: 0, wantStop: 1000, wantReason: "late", wantFloor: 1 * ms,
+		},
+		{
+			// An explicit 1ms floor (ceiling 10ms) is not overwritten by the first
+			// step's 50ms p99, which trips the ramp immediately.
+			description: "explicit floor bounds the ceiling and is preserved",
+			cfg:         driveConfig{rate: 1000, floor: 1 * ms},
+			pass: fakePass(func(rate float64) (time.Duration, int64, int64) {
+				return 50 * ms, 0, 1000
+			}),
+			wantKnee: 0, wantStop: 1000, wantReason: "p99", wantFloor: 1 * ms,
+		},
+		{
+			// The measured floor comes from the first step (2ms → 20ms ceiling)
+			// and is not overwritten by later steps: 2000's 30ms p99 trips it.
+			description: "measured floor is fixed by the first step",
+			cfg:         driveConfig{rate: 1000, floor: 0},
+			pass: fakePass(func(rate float64) (time.Duration, int64, int64) {
+				if rate == 1000 {
+					return 2 * ms, 0, 1000
+				}
+				return 30 * ms, 0, 1000
+			}),
+			wantKnee: 1000, wantStop: 2000, wantReason: "p99", wantFloor: 2 * ms,
+		},
+		{
+			// Every step up to the ramp cap is healthy: the ramp reports "cap"
+			// with the top rate as the knee.
+			description: "ramp cap reached without saturating",
+			cfg:         driveConfig{rate: 1000, floor: 1 * ms},
+			pass: fakePass(func(rate float64) (time.Duration, int64, int64) {
+				return 1 * ms, 0, 500
+			}),
+			wantKnee: 1000 * math.Pow(2, maxRampSteps-1), wantStop: 1000 * math.Pow(2, maxRampSteps-1), wantReason: "cap", wantFloor: 1 * ms,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			d := &driver{cfg: tt.cfg}
+			_, kneeS, sr := d.ramp(context.Background(), tt.pass)
+			if sr.knee != tt.wantKnee {
+				t.Errorf("knee = %.0f, want %.0f", sr.knee, tt.wantKnee)
+			}
+			if sr.stopRate != tt.wantStop {
+				t.Errorf("stopRate = %.0f, want %.0f", sr.stopRate, tt.wantStop)
+			}
+			if sr.reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", sr.reason, tt.wantReason)
+			}
+			// An explicit floor is preserved verbatim; a measured floor comes back
+			// as an HDR bucket value, so it is only exact to the histogram's 3
+			// significant figures.
+			if tt.cfg.floor > 0 {
+				if sr.floor != tt.wantFloor {
+					t.Errorf("explicit floor = %s, want it preserved as %s", sr.floor, tt.wantFloor)
+				}
+			} else if delta := sr.floor - tt.wantFloor; delta < -tt.wantFloor/100 || delta > tt.wantFloor/100 {
+				t.Errorf("measured floor = %s, want ≈ %s (±1%%)", sr.floor, tt.wantFloor)
+			}
+			if kneeS == nil || kneeS.hdr.Count() == 0 {
+				t.Error("the reported step must carry a non-empty histogram")
+			}
+		})
+	}
+}
+
+// TestDriveSaturationSmoke runs the real open-loop ramp once at a trivial load,
+// asserting only the timing-independent invariants (a stop reason is recorded
+// and the reported rate is the knee). The knee value itself depends on the
+// host's scheduler precision, so it is exercised deterministically in TestRamp.
+func TestDriveSaturationSmoke(t *testing.T) {
+	er := &echoRequester{}
+	cfg := driveConfig{mode: modeSaturation, rate: 1000, step: 40 * time.Millisecond, inflight: 8, timeout: time.Second}
+	rc := newTestCell(t, er, cfg.mode)
+	res, err := drive(context.Background(), rc, cfg, 100)
+	if err != nil {
+		t.Fatalf("drive: %v", err)
+	}
+	if res.sat == nil {
+		t.Fatal("saturation result missing")
+	}
+	if res.sat.reason == "" {
+		t.Error("a finished ramp must record a stop reason")
+	}
+	if res.rate != res.sat.knee {
+		t.Errorf("reported rate = %.0f, want the knee %.0f", res.rate, res.sat.knee)
 	}
 }

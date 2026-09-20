@@ -165,9 +165,7 @@ func runAndPrint(kind, addr string, br *busRun, req proto.Message, newResp func(
 		return err
 	}
 	printBusSummary(kind, addr, br.cell, res.hdr.Summarize(res.elapsed), res.elapsed)
-	if res.lateSends > 0 {
-		fmt.Printf("  late sends      %d\n", res.lateSends)
-	}
+	printRunExtras(res)
 	return emitCell(f.emit(), br.cell, res)
 }
 
