@@ -84,9 +84,9 @@ running agent serves every codec — `nats`/`rabbitmq`/`valkey`/`mqtt` × any of
 - `proto` and `vtproto` are **wire-identical** (both register under gRPC
   content-subtype `proto`), so both codecs measure fine against a proto-profile
   agent — this is the default deployment.
-- `protojson` uses content-subtype `json`, so **gRPC + protojson errors 100 %
-  against a proto-profile agent**. This is by design, not a bug; the harness
-  will report the whole cell as failed.
+- `protojson` uses content-subtype `json`, so
+  **gRPC + protojson errors 100 % against a proto-profile agent**. This is by
+  design, not a bug; the harness will report the whole cell as failed.
 
 To measure the gRPC + protojson cell you must first put the agent on the
 protojson profile (a reversible reprofile), then restore it:
@@ -104,8 +104,9 @@ nix run .#k8s-proto-bench -- --transports grpc --codecs protojson --regions us-w
 # 4. restore -codec=proto and re-enable automated{prune,selfHeal}
 ```
 
-Pass these JSON payloads through the `k8s-vm-ssh` wrapper wrapped in **literal
-single quotes** (`"'…'"`, escaping the inner double quotes as above): the remote
+Pass these JSON payloads through the `k8s-vm-ssh` wrapper wrapped in
+**literal single quotes** (`"'…'"`, escaping the inner double quotes as above):
+the remote
 login shell re-parses the joined command and would otherwise strip the quotes
 and brace-expand the `{…}`. Verify a payload survived with
 `… printf '%s\n' "'…'"` before applying it. Simple `-o jsonpath=…` reads and a
@@ -285,10 +286,10 @@ allocation figures:
   whenever the transport carries the stamps.
 - **Agent-side** (`agent_gc_cpu_fraction`, `agent_gc_cycles_per_s`) are scraped
   from the agent's Prometheus series. They require `go_cpu_classes_*`, which the
-  agent only exports once the `region-agent` **image is rebuilt and
-  redeployed** with the `GoRuntimeMetricsRule{Matcher: ^/cpu/classes/}` collector
-  rule; until then these two columns stay blank while the driver columns are
-  full.
+  agent only exports once the `region-agent`
+  **image is rebuilt and redeployed** with the
+  `GoRuntimeMetricsRule{Matcher: ^/cpu/classes/}` collector rule; until then
+  these two columns stay blank while the driver columns are full.
 
 ### Operational caveats
 
