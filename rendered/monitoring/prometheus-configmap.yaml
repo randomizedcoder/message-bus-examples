@@ -74,4 +74,11 @@ data:
         scrape_interval: 5s
         static_configs:
           - targets: ['10.33.33.1:9300', '10.33.33.1:9301', '10.33.33.1:9302', '10.33.33.1:9303', '10.33.33.1:9304', '10.33.33.1:9305', '10.33.33.1:9306', '10.33.33.1:9307']
+      # Host rpc-benchmark rpc_* /metrics (§22) over the k8sbr0 bridge — the
+      # RPC-lab request/response counters, latency, bytes, and idempotent
+      # replays the RPC dashboard renders. DOWN until a run passes -metrics-addr.
+      - job_name: rpc-benchmark
+        scrape_interval: 5s
+        static_configs:
+          - targets: ['10.33.33.1:9310']
 

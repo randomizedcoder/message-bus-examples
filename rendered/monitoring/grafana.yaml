@@ -111,6 +111,8 @@ spec:
           mountPath: /etc/grafana/dashboards/community/node-exporter-full
         - name: dash-protobench
           mountPath: /etc/grafana/dashboards/protobench
+        - name: dash-rpc
+          mountPath: /etc/grafana/dashboards/rpc
         - name: data
           mountPath: /var/lib/grafana
         - name: logs
@@ -153,6 +155,9 @@ spec:
       - name: dash-protobench
         configMap:
           name: grafana-dashboard-protobench
+      - name: dash-rpc
+        configMap:
+          name: grafana-dashboard-rpc
       - name: data
         emptyDir: {}
       - name: logs

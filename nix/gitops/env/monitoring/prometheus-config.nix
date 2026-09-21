@@ -83,5 +83,12 @@
             scrape_interval: 5s
             static_configs:
               - targets: ${targets.driver}
+          # Host rpc-benchmark rpc_* /metrics (§22) over the k8sbr0 bridge — the
+          # RPC-lab request/response counters, latency, bytes, and idempotent
+          # replays the RPC dashboard renders. DOWN until a run passes -metrics-addr.
+          - job_name: rpc-benchmark
+            scrape_interval: 5s
+            static_configs:
+              - targets: ${targets.rpcBench}
   '';
 }
