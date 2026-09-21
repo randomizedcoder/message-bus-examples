@@ -78,6 +78,28 @@ func Sum256(b []byte) [32]byte { return sha256.Sum256(b) }
 // wall-clock timestamps.
 func RTT(sendMono, recvMono time.Time) time.Duration { return recvMono.Sub(sendMono) }
 
+// ServerDuration is the responder's service time — server_send_time minus
+// server_receive_time — stamped by the agent (StampReceive/StampSend). Both
+// timestamps come from the same clock on the same host, so unlike OneWay this
+// needs no clock offset and is meaningful even when the clock gate is not met.
+// Returns 0 when the reply carries neither stamp (a transport that does not
+// stamp, or an error reply) or when they are out of order, so the caller can
+// skip it and leave the server-duration column blank (design §8.4).
+func ServerDuration(env *workloadsv1.Envelope) time.Duration {
+	if env == nil {
+		return 0
+	}
+	r, s := env.GetServerReceiveTime(), env.GetServerSendTime()
+	if r == nil || s == nil {
+		return 0
+	}
+	d := s.AsTime().Sub(r.AsTime())
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
 // OneWay estimates forward (client→server) and reverse (server→client) one-way
 // latencies from the envelope wall-clock timestamps, corrected by the clock
 // offset for the responder's region. clientRecv is the driver's wall-clock

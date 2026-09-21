@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +68,11 @@ func NewProvider(addr string, views ...sdkmetric.View) (*sdkmetric.MeterProvider
 	reg.MustRegister(
 		collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(
 			collectors.MetricsGC, collectors.MetricsMemory, collectors.MetricsScheduler,
+			// /cpu/classes/* exports go_cpu_classes_*_cpu_seconds_total, incl. the
+			// GC and total CPU counters the harness divides for agent_gc_cpu_fraction
+			// (design §11.2). Without this rule those series don't exist and the
+			// fraction column stays blank.
+			collectors.GoRuntimeMetricsRule{Matcher: regexp.MustCompile(`^/cpu/classes/`)},
 		)),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)

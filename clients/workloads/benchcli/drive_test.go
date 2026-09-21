@@ -474,3 +474,37 @@ func TestDriveSaturationSmoke(t *testing.T) {
 		t.Errorf("reported rate = %.0f, want the knee %.0f", res.rate, res.sat.knee)
 	}
 }
+
+// TestDriverGCProfile: the window GC summary reads the right pauses out of the
+// MemStats ring, computes p99 over them, and derives the cycle rate — and
+// reports zeros when no GC ran during the pass.
+func TestDriverGCProfile(t *testing.T) {
+	var ring [256]uint64
+	for i := 0; i < 256; i++ {
+		ring[i] = uint64((i + 1) * 1000) // index i → (i+1) µs, so the ring is easy to read
+	}
+	tests := []struct {
+		description   string
+		gc0, gc1      uint32
+		elapsed       time.Duration
+		wantP99       time.Duration
+		wantCyclesPer float64
+	}{
+		{"no GC ran (gc0==gc1)", 7, 7, time.Second, 0, 0},
+		{"single GC, p99 is that one pause", 0, 1, time.Second, 1 * time.Microsecond, 1},
+		{"five GCs, p99 is the largest", 0, 5, time.Second, 5 * time.Microsecond, 5},
+		{"five GCs over 2s halves the rate", 0, 5, 2 * time.Second, 5 * time.Microsecond, 2.5},
+		{"zero elapsed leaves rate 0", 0, 3, 0, 3 * time.Microsecond, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			p99, cps := driverGCProfile(tc.gc0, tc.gc1, ring, tc.elapsed)
+			if p99 != tc.wantP99 {
+				t.Errorf("p99 = %v, want %v", p99, tc.wantP99)
+			}
+			if cps != tc.wantCyclesPer {
+				t.Errorf("cycles/s = %v, want %v", cps, tc.wantCyclesPer)
+			}
+		})
+	}
+}

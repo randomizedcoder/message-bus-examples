@@ -433,10 +433,25 @@ EOF
 
             # Enrich with the agent's GC columns from Prometheus over the cell
             # window (design §8.4; blank if Prom down). agent_region label is set
-            # by the workloads-agents scrape job.
-            win=$(( (t1 - t0) / 1000 )); [ "$win" -lt 5 ] && win=5
-            gccpu="$(prom_scalar "rate(go_cpu_classes_gc_total_cpu_seconds_total{agent_region=\"$DRIVE_REGION\"}[''${win}s]) / rate(go_cpu_classes_total_cpu_seconds_total{agent_region=\"$DRIVE_REGION\"}[''${win}s])" "$(( t1 / 1000 ))")"
-            gccyc="$(prom_scalar "rate(go_gc_cycles_automatic_gc_cycles_total{agent_region=\"$DRIVE_REGION\"}[''${win}s])" "$(( t1 / 1000 ))")"
+            # by the workloads-agents scrape job. A cell window is only a few
+            # seconds — shorter than the scrape interval — so rate(counter[win])
+            # has too few points to resolve. Instead read each counter at the
+            # cell's start and end instants (an instant query returns the latest
+            # sample within Prometheus's lookback) and take the delta: robust for
+            # short windows, and exact (a whole-window increase, not a rate est).
+            t0s=$(( t0 / 1000 )); t1s=$(( t1 / 1000 )); win=$(( t1s - t0s )); [ "$win" -lt 1 ] && win=1
+            gccpu0="$(prom_scalar "go_cpu_classes_gc_total_cpu_seconds_total{agent_region=\"$DRIVE_REGION\"}" "$t0s")"
+            gccpu1="$(prom_scalar "go_cpu_classes_gc_total_cpu_seconds_total{agent_region=\"$DRIVE_REGION\"}" "$t1s")"
+            gctot0="$(prom_scalar "go_cpu_classes_total_cpu_seconds_total{agent_region=\"$DRIVE_REGION\"}" "$t0s")"
+            gctot1="$(prom_scalar "go_cpu_classes_total_cpu_seconds_total{agent_region=\"$DRIVE_REGION\"}" "$t1s")"
+            gccyc0="$(prom_scalar "go_gc_cycles_automatic_gc_cycles_total{agent_region=\"$DRIVE_REGION\"}" "$t0s")"
+            gccyc1="$(prom_scalar "go_gc_cycles_automatic_gc_cycles_total{agent_region=\"$DRIVE_REGION\"}" "$t1s")"
+            # GC CPU fraction = Δ(gc cpu-seconds) / Δ(total cpu-seconds) over the window.
+            gccpu="$(awk -v a="$gccpu0" -v b="$gccpu1" -v c="$gctot0" -v d="$gctot1" \
+              'BEGIN{ if(a!=""&&b!=""&&c!=""&&d!=""){ dt=d-c; if(dt>0) printf "%.6f",(b-a)/dt } }')"
+            # GC cycles/s = Δ(automatic gc cycles) / window seconds.
+            gccyc="$(awk -v a="$gccyc0" -v b="$gccyc1" -v w="$win" \
+              'BEGIN{ if(a!=""&&b!=""){ printf "%.4f",(b-a)/w } }')"
             tmp="$(mktemp)"
             jq --arg cpu "$gccpu" --arg cyc "$gccyc" \
               '(if ($cpu|length)>0 then .summary.agent_gc_cpu_fraction=($cpu|tonumber) else . end)

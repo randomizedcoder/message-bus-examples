@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -196,10 +198,20 @@ func (rc *reqCell) newJob() *job {
 type series struct {
 	mu   sync.Mutex
 	hdr  *harness.HDR
+	srv  *harness.HDR // agent service time (envelope server_send-server_receive), per successful reply
 	late int64
 }
 
-func newSeries() *series { return &series{hdr: harness.NewHDR()} }
+func newSeries() *series { return &series{hdr: harness.NewHDR(), srv: harness.NewHDR()} }
+
+// recordServer folds one responder service-time sample (from the reply
+// envelope's server timestamps) into the server-duration histogram. Called only
+// on a successful, message-id-matched reply that actually carried both stamps.
+func (s *series) recordServer(d time.Duration) {
+	s.mu.Lock()
+	s.srv.Record(d)
+	s.mu.Unlock()
+}
 
 // record folds one outcome into the pass histogram under the lock. kind==""
 // is a success (rtt is recorded, CO-corrected when expected>0); otherwise it is
@@ -251,29 +263,41 @@ func drive(ctx context.Context, rc *reqCell, cfg driveConfig, wireReq int64) (ce
 	rc.inst.SetActiveCell(ctx, rc.cell, true)
 	defer rc.inst.SetActiveCell(ctx, rc.cell, false)
 
+	// Snapshot the driver's own allocation + GC state around the measured pass so
+	// the record can carry driver_allocs_per_msg / driver_gc_pause_p99 (the pooling
+	// proof on the live path; design §8.4, §11.2). ReadMemStats stops the world for
+	// a few µs — negligible beside a pass of thousands of round-trips, and done
+	// exactly twice per cell.
+	var m0 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+
+	var (
+		res cellResult
+		s   *series // the measured pass whose server/alloc columns are reported
+	)
 	switch cfg.mode {
 	case modeColdstart:
-		s := newSeries()
+		s = newSeries()
 		elapsed, err := d.runColdstart(ctx, s)
 		if err != nil {
 			return cellResult{}, err
 		}
-		return cellResult{
-			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq, inflight: 1,
-		}, nil
+		res = cellResult{hdr: s.hdr, elapsed: elapsed, wireReq: wireReq, inflight: 1}
 	case modeSaturation:
-		elapsed, s, sr := d.runSaturation(ctx)
-		return cellResult{
+		var elapsed time.Duration
+		var sr *satResult
+		elapsed, s, sr = d.runSaturation(ctx)
+		res = cellResult{
 			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
 			inflight: cfg.inflight, rate: sr.knee, lateSends: s.late, sat: sr,
-		}, nil
+		}
 	case modeOpenLoop:
-		s := newSeries()
+		s = newSeries()
 		elapsed := d.openPass(ctx, cfg.rate, cfg.duration, s)
-		return cellResult{
+		res = cellResult{
 			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
 			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
-		}, nil
+		}
 	case modeFault:
 		// The same open-loop engine as openloop, but the errors it tolerates are
 		// the point: every request that gets no valid reply during the disruption
@@ -281,21 +305,60 @@ func drive(ctx context.Context, rc *reqCell, cfg driveConfig, wireReq int64) (ce
 		// §8.4). duplicate/reordered/redelivered are streaming-tier counters not
 		// observable in unary request/reply — one reply per request — so they stay
 		// zero here and blank in the report.
-		s := newSeries()
+		s = newSeries()
 		elapsed := d.openPass(ctx, cfg.rate, cfg.duration, s)
-		return cellResult{
+		res = cellResult{
 			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
 			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
 			missing: int64(s.hdr.NumErrors()),
-		}, nil
+		}
 	default: // latency, windowed
-		s := newSeries()
+		s = newSeries()
 		elapsed := d.runClosed(ctx, s)
-		return cellResult{
+		res = cellResult{
 			hdr: s.hdr, elapsed: elapsed, wireReq: wireReq,
 			inflight: cfg.inflight, rate: cfg.rate, lateSends: s.late,
-		}, nil
+		}
 	}
+
+	var m1 runtime.MemStats
+	runtime.ReadMemStats(&m1)
+	res.srvHDR = s.srv
+	if msgs := res.hdr.Count(); msgs > 0 {
+		res.allocsPerMsg = float64(m1.Mallocs-m0.Mallocs) / float64(msgs)
+		res.allocBytesPerMsg = float64(m1.TotalAlloc-m0.TotalAlloc) / float64(msgs)
+	}
+	res.gcPauseP99, res.gcCyclesPerS = driverGCProfile(m0.NumGC, m1.NumGC, m1.PauseNs, res.elapsed)
+	return res, nil
+}
+
+// driverGCProfile summarises the driver's GC over one pass: the p99 of the STW
+// pauses that occurred during the window (gc0..gc1 cycles, from the MemStats
+// PauseNs ring) and the automatic-GC rate. Returns zeros when no GC ran — a
+// well-pooled pass at GOGC=100 may see none, which is itself the result. Only
+// the last 256 pauses are retained by the runtime, so a pass with more GCs than
+// that (never at these payloads) would summarise the most recent 256.
+func driverGCProfile(gc0, gc1 uint32, pauseNs [256]uint64, elapsed time.Duration) (p99 time.Duration, cyclesPerS float64) {
+	n := gc1 - gc0
+	if n == 0 {
+		return 0, 0
+	}
+	if elapsed > 0 {
+		cyclesPerS = float64(n) / elapsed.Seconds()
+	}
+	if n > 256 {
+		n = 256
+	}
+	pauses := make([]time.Duration, 0, n)
+	for i := gc1 - n; i != gc1; i++ {
+		pauses = append(pauses, time.Duration(pauseNs[i%256]))
+	}
+	sort.Slice(pauses, func(a, b int) bool { return pauses[a] < pauses[b] })
+	idx := int(math.Ceil(0.99*float64(len(pauses)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	return pauses[idx], cyclesPerS
 }
 
 // runClosed drives inflight workers that each send, wait for the reply, then
@@ -502,12 +565,16 @@ func (d *driver) doOn(ctx context.Context, r transport.Requester, s *series, j *
 		s.record(0, "transport", expected)
 		return
 	}
-	if re := envelope.Of(j.resp); re == nil || !bytes.Equal(re.GetMessageId(), j.env.GetMessageId()) {
+	re := envelope.Of(j.resp)
+	if re == nil || !bytes.Equal(re.GetMessageId(), j.env.GetMessageId()) {
 		rc.inst.Error(ctx, rc.cell, "corrupt")
 		s.record(0, "corrupt", expected)
 		return
 	}
 	rc.inst.Message(ctx, rc.cell, harness.ResultReceived)
 	rc.inst.RTT(ctx, rc.cell, rtt)
+	if sd := envelope.ServerDuration(re); sd > 0 {
+		s.recordServer(sd)
+	}
 	s.record(rtt, "", expected)
 }
