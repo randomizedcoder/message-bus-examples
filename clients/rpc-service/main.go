@@ -28,10 +28,12 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 )
 
 func main() {
 	addr := flag.String("grpc-addr", ":9440", "GatewayService gRPC listen address")
+	natsAddr := flag.String("nats", "", "also serve GatewayService over NATS Core req/reply at this broker (host:port or nats://…); empty disables")
 	idemTTL := flag.Duration("idempotency-ttl", 5*time.Minute, "how long a completed operation is remembered for retry dedup (0 disables)")
 	validate := flag.Bool("validate", true, "run protovalidate on decoded request payloads")
 	flag.Parse()
@@ -41,6 +43,17 @@ func main() {
 
 	cache := rpc.NewIdempotencyCache(*idemTTL)
 	handler := idempotent(cache, mux)
+
+	// Optional NATS responder: the same handler serves the §11 NATS Core path,
+	// so a request arriving over gRPC or NATS is dispatched and deduped identically.
+	if *natsAddr != "" {
+		resp, err := natsx.Serve(context.Background(), *natsAddr, handler)
+		if err != nil {
+			log.Fatalf("rpc-service: serve NATS at %s: %v", *natsAddr, err)
+		}
+		defer resp.Close()
+		log.Printf("rpc-service: also serving GatewayService over NATS at %s (subject %s)", *natsAddr, natsx.SubjectWildcard)
+	}
 
 	lis, err := net.Listen("tcp", *addr)
 	if err != nil {
