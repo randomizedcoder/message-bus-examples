@@ -65,6 +65,7 @@ type Instruments struct {
 	responses    metric.Int64Counter
 	errors       metric.Int64Counter
 	timeouts     metric.Int64Counter
+	replays      metric.Int64Counter
 	duration     metric.Float64Histogram
 	requestBytes metric.Int64Histogram
 	responseByte metric.Int64Histogram
@@ -88,6 +89,7 @@ func New(meter metric.Meter) (*Instruments, error) {
 	in.responses = ctr("rpc_responses_total", "RPC responses received, by result")
 	in.errors = ctr("rpc_errors_total", "RPC transport-level errors (no response)")
 	in.timeouts = ctr("rpc_timeouts_total", "RPC calls that exceeded their deadline")
+	in.replays = ctr("rpc_idempotent_replays_total", "responses served from the service idempotency cache (duplicate logical operations, §29)")
 	if err != nil {
 		return nil, err
 	}
@@ -137,8 +139,11 @@ func (in *Instruments) For(l Labels) *Recorder {
 // Observe records one completed call: it counts the request, its request-size
 // sample, and — keyed on result — the response count/size, duration, and the
 // error/timeout counter. hasResp is false for a transport error that produced no
-// Response (respBytes is then ignored). A nil Recorder does nothing.
-func (r *Recorder) Observe(ctx context.Context, result string, d time.Duration, reqBytes int, hasResp bool, respBytes int) {
+// Response (respBytes is then ignored). replay marks an OK response that the
+// service served from its idempotency cache (a duplicate logical operation, §29),
+// counted separately into rpc_idempotent_replays_total. A nil Recorder does
+// nothing.
+func (r *Recorder) Observe(ctx context.Context, result string, d time.Duration, reqBytes int, hasResp bool, respBytes int, replay bool) {
 	if r == nil {
 		return
 	}
@@ -149,6 +154,9 @@ func (r *Recorder) Observe(ctx context.Context, result string, d time.Duration, 
 	if hasResp {
 		r.in.responses.Add(ctx, 1, r.base, resultOpt)
 		r.in.responseByte.Record(ctx, int64(respBytes), r.base)
+	}
+	if replay {
+		r.in.replays.Add(ctx, 1, r.base)
 	}
 	switch result {
 	case ResultTimeout:

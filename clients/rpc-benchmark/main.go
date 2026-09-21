@@ -51,6 +51,9 @@ func main() {
 	metricsAddr := flag.String("metrics-addr", "", "serve rpc_* Prometheus metrics on this host:port (§22); empty disables")
 	metricsLinger := flag.Duration("metrics-linger", 0, "after the run, keep -metrics-addr serving for this long so a scrape can collect the final counters")
 	out := flag.String("out", "", "write a reproducible run.json here (§35); empty disables")
+	retries := flag.Int("retries", 0, "§29: retry a transient failure (timeout / unavailable) up to this many times, re-sending under a new request_id but the same idempotency_key so a service with an idempotency cache still executes the operation once")
+	retryBackoff := flag.Duration("retry-backoff", 0, "fixed delay before each retry when -retries > 0")
+	idemKey := flag.String("idempotency-key", "", "§29: stamp every request with this idempotency_key, so after the first OK the service replays the cached response — a deterministic duplicate-operation demonstration. Empty = each call is a distinct logical operation")
 	asJSON := flag.Bool("json", false, "emit each cell as a JSON object (one per line) instead of the text report")
 	flag.Parse()
 
@@ -66,7 +69,7 @@ func main() {
 		log.Fatalf("rpc-benchmark: %v", err)
 	}
 
-	wls, err := buildWorkloads(*sizes, *customerID, *region, *timeout)
+	wls, err := buildWorkloads(*sizes, *customerID, *region, *timeout, *idemKey)
 	if err != nil {
 		log.Fatalf("rpc-benchmark: %v", err)
 	}
@@ -103,6 +106,12 @@ func main() {
 	}
 	if err != nil {
 		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, label, err)
+	}
+	// §29 safe retry: wrap the transport so a transient failure is re-sent under a
+	// fresh request_id but the same idempotency_key. The wrapper is a drop-in
+	// rpc.Client, so the load engine is unchanged.
+	if *retries > 0 {
+		client = rpc.NewRetryClient(client, rpc.RetryPolicy{MaxAttempts: *retries + 1, Backoff: *retryBackoff})
 	}
 	defer client.Close()
 
@@ -174,6 +183,9 @@ func printReport(transport, codec string, cfg benchConfig, c cellRun) {
 	total := int64(s.Count) + int64(s.Errors)
 	fmt.Printf("  ok=%d errors=%d (timeouts=%d non-ok=%d) of %d  throughput=%.0f ok/s\n",
 		s.Count, s.Errors, c.res.Timeouts, c.res.NonOK, total, s.ThroughputPerSec)
+	if c.res.Retries > 0 || c.res.Replays > 0 {
+		fmt.Printf("  retries=%d idempotent-replays=%d (§29)\n", c.res.Retries, c.res.Replays)
+	}
 	fmt.Printf("  latency  min=%s p50=%s p90=%s p95=%s p99=%s p99.9=%s max=%s mean=%s\n",
 		d(s.Min), d(s.P50), d(s.P90), d(c.res.hdr.ValueAt(95)), d(s.P99), d(s.P999), d(s.Max), d(s.Mean))
 	if c.res.CorrectedOK {
@@ -195,6 +207,8 @@ type benchJSON struct {
 	Errors       int     `json:"errors"`
 	Timeouts     int64   `json:"timeouts"`
 	NonOK        int64   `json:"non_ok"`
+	Retries      int64   `json:"retries"`
+	Replays      int64   `json:"idempotent_replays"`
 	ThroughputPS float64 `json:"throughput_ok_per_sec"`
 	P50MS        float64 `json:"p50_ms"`
 	P90MS        float64 `json:"p90_ms"`
@@ -219,6 +233,8 @@ func emitJSON(transport, codec string, cfg benchConfig, c cellRun) {
 		Errors:       s.Errors,
 		Timeouts:     c.res.Timeouts,
 		NonOK:        c.res.NonOK,
+		Retries:      c.res.Retries,
+		Replays:      c.res.Replays,
 		ThroughputPS: s.ThroughputPerSec,
 		P50MS:        ms(s.P50),
 		P90MS:        ms(s.P90),

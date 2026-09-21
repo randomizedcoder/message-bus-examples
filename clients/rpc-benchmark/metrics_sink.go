@@ -27,8 +27,17 @@ func (s *metricsSink) record(result string, resp *rpcv1.Response, rtt time.Durat
 		return
 	}
 	respBytes := 0
+	replay := false
 	if resp != nil {
 		respBytes = proto.Size(resp)
+		replay = isReplay(resp)
 	}
-	s.rec.Observe(context.Background(), result, rtt, s.reqBytes, resp != nil, respBytes)
+	s.rec.Observe(context.Background(), result, rtt, s.reqBytes, resp != nil, respBytes, replay)
+}
+
+// isReplay reports whether resp was served from the service idempotency cache: it
+// stamps metadata["idempotent-replay"]="true" on a retried logical operation
+// (§29). The benchmark counts these as duplicate logical operations.
+func isReplay(resp *rpcv1.Response) bool {
+	return resp.GetMetadata()["idempotent-replay"] == "true"
 }

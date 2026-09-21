@@ -35,11 +35,14 @@ func TestObserveCounts(t *testing.T) {
 		description  string
 		result       string
 		hasResp      bool
+		replay       bool
 		wantResponse bool // a responses_total{result} series is emitted
 		wantTimeout  bool // timeouts_total is bumped
 		wantError    bool // errors_total is bumped
+		wantReplay   bool // idempotent_replays_total is bumped
 	}{
 		{description: "ok response counts a response, no error/timeout", result: ResultOK, hasResp: true, wantResponse: true},
+		{description: "an idempotent replay counts a response and a replay", result: ResultOK, hasResp: true, replay: true, wantResponse: true, wantReplay: true},
 		{description: "non-ok response counts a response, no error/timeout", result: ResultNonOK, hasResp: true, wantResponse: true},
 		{description: "status timeout counts a response and a timeout", result: ResultTimeout, hasResp: true, wantResponse: true, wantTimeout: true},
 		{description: "transport timeout counts a timeout, no response", result: ResultTimeout, hasResp: false, wantTimeout: true},
@@ -56,7 +59,7 @@ func TestObserveCounts(t *testing.T) {
 				t.Fatalf("New: %v", err)
 			}
 			rec := inst.For(Labels{Transport: "grpc", Codec: "proto", Service: "echo", Method: "Echo"})
-			rec.Observe(context.Background(), tt.result, 2*time.Millisecond, 128, tt.hasResp, 256)
+			rec.Observe(context.Background(), tt.result, 2*time.Millisecond, 128, tt.hasResp, 256, tt.replay)
 
 			fams, err := reg.Gather()
 			if err != nil {
@@ -87,6 +90,9 @@ func TestObserveCounts(t *testing.T) {
 			if got := counterByResult(t, byName["rpc_errors_total"])[""]; (got > 0) != tt.wantError {
 				t.Errorf("rpc_errors_total = %v, wantError = %v", got, tt.wantError)
 			}
+			if got := counterByResult(t, byName["rpc_idempotent_replays_total"])[""]; (got > 0) != tt.wantReplay {
+				t.Errorf("rpc_idempotent_replays_total = %v, wantReplay = %v", got, tt.wantReplay)
+			}
 		})
 	}
 }
@@ -101,5 +107,5 @@ func TestNilRecorderIsNoop(t *testing.T) {
 		t.Fatalf("For on nil Instruments = %v, want nil", rec)
 	}
 	// Must not panic.
-	rec.Observe(context.Background(), ResultOK, time.Millisecond, 10, true, 20)
+	rec.Observe(context.Background(), ResultOK, time.Millisecond, 10, true, 20, false)
 }

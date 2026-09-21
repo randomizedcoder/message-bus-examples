@@ -87,6 +87,34 @@ func TestHumanSize(t *testing.T) {
 	}
 }
 
+func TestBuildWorkloadsIdempotencyKey(t *testing.T) {
+	tests := []struct {
+		description string
+		idemKey     string
+		wantKey     string // the idempotency_key every minted request should carry
+	}{
+		{description: "no key means each call is a distinct logical operation", idemKey: "", wantKey: ""},
+		{description: "a key is stamped on every request so the run is one logical operation", idemKey: "create-order-123", wantKey: "create-order-123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			wls, err := buildWorkloads("1KiB", "cust", "us-west-2", time.Second, tt.idemKey)
+			if err != nil {
+				t.Fatalf("buildWorkloads: %v", err)
+			}
+			// Two independently minted requests must both carry the key (or both not),
+			// and each must still get its own request_id.
+			r1, r2 := wls[0].newReq(), wls[0].newReq()
+			if r1.GetIdempotencyKey() != tt.wantKey || r2.GetIdempotencyKey() != tt.wantKey {
+				t.Errorf("idempotency_key = %q,%q, want %q", r1.GetIdempotencyKey(), r2.GetIdempotencyKey(), tt.wantKey)
+			}
+			if r1.GetRequestId() == r2.GetRequestId() {
+				t.Errorf("both requests share request_id %q; each attempt must be distinct", r1.GetRequestId())
+			}
+		})
+	}
+}
+
 func TestBuildWorkloads(t *testing.T) {
 	tests := []struct {
 		description string
@@ -103,7 +131,7 @@ func TestBuildWorkloads(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			wls, err := buildWorkloads(tt.sizes, "cust", "us-west-2", time.Second)
+			wls, err := buildWorkloads(tt.sizes, "cust", "us-west-2", time.Second, "")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("buildWorkloads err = %v, wantErr = %v", err, tt.wantErr)
 			}
