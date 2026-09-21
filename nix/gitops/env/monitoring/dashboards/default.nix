@@ -13,11 +13,14 @@ let
   soak       = import ./soak.nix { inherit ns; };
   community  = import ./community.nix { inherit pkgs lib ns dsUid; };
   protobench = import ./protobench.nix { inherit ns; };
+  rpc        = import ./rpc.nix { inherit ns; };
   pbMount  = "- name: ${protobench.volName}\n          mountPath: ${protobench.mountPath}";
   pbVolume = "- name: ${protobench.volName}\n        configMap:\n          name: ${protobench.cmName}";
+  rpcMount  = "- name: ${rpc.volName}\n          mountPath: ${rpc.mountPath}";
+  rpcVolume = "- name: ${rpc.volName}\n        configMap:\n          name: ${rpc.cmName}";
 in
 {
-  manifests = [ soak protobench.manifest community.manifest ];
-  volumeMounts = community.volumeMounts + "\n        " + pbMount;
-  volumes = community.volumes + "\n      " + pbVolume;
+  manifests = [ soak protobench.manifest rpc.manifest community.manifest ];
+  volumeMounts = community.volumeMounts + "\n        " + pbMount + "\n        " + rpcMount;
+  volumes = community.volumes + "\n      " + pbVolume + "\n      " + rpcVolume;
 }

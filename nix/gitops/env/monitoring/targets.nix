@@ -15,6 +15,7 @@ let
   vkC   = constants.messageBus.valkey;
   mqttC = constants.messageBus.mqtt;
   wlC   = constants.messageBus.workloads;
+  rpcC  = constants.messageBus.rpc;
   pb    = constants.protoBench;
 
   # Inline YAML array of quoted targets: ['a:1', 'b:2'].
@@ -75,4 +76,9 @@ in
   driver = mkTargets (map
     (i: "${mon.hostBridgeIP}:${toString (pb.hostMetricsBasePort + i)}")
     (lib.range 0 (pb.hostMetricsCount - 1)));
+
+  # Host rpc-benchmark rpc_* /metrics (§22): a single host port over the k8sbr0
+  # bridge, past the proto-bench driver's 9300-9307 block. DOWN until a benchmark
+  # runs with -metrics-addr, exactly like the driver/soak host ranges.
+  rpcBench = mkTargets [ "${mon.hostBridgeIP}:${toString rpcC.benchMetricsPort}" ];
 }
