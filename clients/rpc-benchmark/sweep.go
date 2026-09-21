@@ -42,12 +42,12 @@ type workload struct {
 // single representative customer.Lookup (unchanged default); otherwise each size
 // becomes an echo.Echo round-trip whose AllTypes.blob is that many bytes, so the
 // request and its echoed response both grow with the size (§26).
-func buildWorkloads(sizes, customerID, region string, timeout time.Duration) ([]workload, error) {
+func buildWorkloads(sizes, customerID, region string, timeout time.Duration, idemKey string) ([]workload, error) {
 	if strings.TrimSpace(sizes) == "" {
 		payload := &benchmarkv1.CustomerLookupRequest{CustomerId: customerID, Region: region}
 		return []workload{{
 			service: "customer", method: "Lookup", fixture: "customer",
-			newReq: mkReq("customer", "Lookup", payload, timeout),
+			newReq: mkReq("customer", "Lookup", payload, timeout, idemKey),
 		}}, nil
 	}
 	ns, err := parseSizes(sizes)
@@ -59,20 +59,26 @@ func buildWorkloads(sizes, customerID, region string, timeout time.Duration) ([]
 		payload := &benchmarkv1.AllTypes{Blob: make([]byte, n)}
 		out = append(out, workload{
 			service: "echo", method: "Echo", fixture: humanSize(n), blobBytes: n,
-			newReq: mkReq("echo", "Echo", payload, timeout),
+			newReq: mkReq("echo", "Echo", payload, timeout, idemKey),
 		})
 	}
 	return out, nil
 }
 
 // mkReq returns a factory that builds a fresh envelope around a fixed payload;
-// only request_id / client_sent_at differ per call. The payload is fixed and
-// valid, so a build failure is a programming error, not a runtime condition.
-func mkReq(service, method string, payload proto.Message, timeout time.Duration) func() *rpcv1.Request {
+// only request_id / client_sent_at differ per call. When idemKey is non-empty
+// every request carries it, so the whole run is one logical operation and the
+// service replays the first OK response for the rest — the deterministic §29
+// duplicate-operation demonstration. The payload is fixed and valid, so a build
+// failure is a programming error, not a runtime condition.
+func mkReq(service, method string, payload proto.Message, timeout time.Duration, idemKey string) func() *rpcv1.Request {
 	return func() *rpcv1.Request {
 		req, err := rpc.NewRequest(service, method, payload, timeout)
 		if err != nil {
 			panic(err)
+		}
+		if idemKey != "" {
+			req.IdempotencyKey = idemKey
 		}
 		return req
 	}
@@ -166,6 +172,8 @@ func cellSummary(c cellRun, cfg benchConfig, transport, codec string) runrecord.
 		Pool: "none", GC: "default", Mode: cfg.mode,
 		Msgs:           int64(s.Count),
 		Errors:         c.res.hdr.ErrorKinds(),
+		Retries:        c.res.Retries,
+		Replays:        c.res.Replays,
 		ThroughputMsgS: s.ThroughputPerSec,
 		RTTP50US:       us(s.P50),
 		RTTP90US:       us(s.P90),

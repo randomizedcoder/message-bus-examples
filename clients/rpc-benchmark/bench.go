@@ -73,7 +73,12 @@ type result struct {
 	CorrectedOK  bool
 	Timeouts     int64
 	NonOK        int64
-	Elapsed      time.Duration
+	// Retries is the number of retry attempts the RetryClient issued during the
+	// cell (0 when -retries is unset); Replays is the number of OK responses the
+	// service served from its idempotency cache (§29 duplicate logical operations).
+	Retries int64
+	Replays int64
+	Elapsed time.Duration
 	// hdr is the raw accumulator, retained so run.json can render the p95 and the
 	// full .hgrm distribution the reduced Summary does not carry.
 	hdr *harness.HDR
@@ -83,7 +88,7 @@ type result struct {
 // (an OK response within the deadline). It also bumps the timeout / non-OK
 // counters the printed report separates out, and mirrors the outcome to sink
 // (the rpc_* Prometheus metrics; nil when -metrics-addr is unset).
-func classify(hdr *harness.HDR, rtt time.Duration, resp *rpcv1.Response, err error, timeouts, nonOK *int64, corrected bool, expected time.Duration, sink *metricsSink) bool {
+func classify(hdr *harness.HDR, rtt time.Duration, resp *rpcv1.Response, err error, timeouts, nonOK, replays *int64, corrected bool, expected time.Duration, sink *metricsSink) bool {
 	switch {
 	case err != nil:
 		if isTimeout(err) {
@@ -112,6 +117,9 @@ func classify(hdr *harness.HDR, rtt time.Duration, resp *rpcv1.Response, err err
 		} else {
 			hdr.Record(rtt)
 		}
+		if isReplay(resp) {
+			atomic.AddInt64(replays, 1)
+		}
 		sink.record(rpcmetrics.ResultOK, resp, rtt)
 		return true
 	}
@@ -125,30 +133,48 @@ func isTimeout(err error) bool {
 // request_id each time) so the server sees distinct logical operations.
 func runBench(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, sink *metricsSink) result {
 	hdr := harness.NewHDR()
-	var timeouts, nonOK int64
+	var timeouts, nonOK, replays int64
 	var elapsed time.Duration
+
+	// A RetryClient counts its retries cumulatively; snapshot the delta over this
+	// cell so run.json reports per-cell retries (§29).
+	rc, _ := client.(retryCounter)
+	var retriesBefore uint64
+	if rc != nil {
+		retriesBefore = rc.Retries()
+	}
 
 	switch cfg.mode {
 	case modeClosed:
-		elapsed = runClosed(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK, sink)
+		elapsed = runClosed(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK, &replays, sink)
 	case modeOpen:
-		elapsed = runOpen(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK, sink)
+		elapsed = runOpen(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK, &replays, sink)
 	}
 
 	res := result{
 		Summary:  hdr.Summarize(elapsed),
 		Timeouts: timeouts,
 		NonOK:    nonOK,
+		Replays:  replays,
 		Elapsed:  elapsed,
 		hdr:      hdr,
+	}
+	if rc != nil {
+		res.Retries = int64(rc.Retries() - retriesBefore)
 	}
 	res.CorrectedP99, res.CorrectedOK = hdr.CorrectedP99()
 	return res
 }
 
+// retryCounter is the optional interface a wrapped client implements to report
+// its cumulative retry count (satisfied by *rpc.RetryClient).
+type retryCounter interface {
+	Retries() uint64
+}
+
 // runClosed spawns cfg.concurrency workers draining a shared budget of
 // cfg.requests, each issuing a timed unary Call and blocking for its reply.
-func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK *int64, sink *metricsSink) time.Duration {
+func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK, replays *int64, sink *metricsSink) time.Duration {
 	var remaining atomic.Int64
 	remaining.Store(int64(cfg.requests))
 
@@ -165,7 +191,7 @@ func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Req
 				}
 				rtt, resp, err := oneCall(ctx, client, newReq(), cfg.timeout)
 				mu.Lock()
-				classify(hdr, rtt, resp, err, timeouts, nonOK, false, 0, sink)
+				classify(hdr, rtt, resp, err, timeouts, nonOK, replays, false, 0, sink)
 				mu.Unlock()
 			}
 		}()
@@ -177,7 +203,7 @@ func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Req
 // runOpen offers requests at cfg.rate for cfg.duration, capping outstanding work
 // at a pool sized from the rate so a stalled server cannot spawn unbounded
 // goroutines, and CO-corrects each sample against its intended send instant.
-func runOpen(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK *int64, sink *metricsSink) time.Duration {
+func runOpen(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK, replays *int64, sink *metricsSink) time.Duration {
 	pool := int(cfg.rate/10) + 1
 	if pool > 4096 {
 		pool = 4096
@@ -216,7 +242,7 @@ func runOpen(ctx context.Context, client benchClient, newReq func() *rpcv1.Reque
 			expected := time.Since(intended) // how late the send already is
 			rtt, resp, err := oneCall(ctx, client, newReq(), cfg.timeout)
 			mu.Lock()
-			classify(hdr, rtt+expected, resp, err, timeouts, nonOK, true, rtt+expected, sink)
+			classify(hdr, rtt+expected, resp, err, timeouts, nonOK, replays, true, rtt+expected, sink)
 			mu.Unlock()
 			free <- struct{}{}
 		}(intended)

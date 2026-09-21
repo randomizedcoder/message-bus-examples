@@ -113,6 +113,8 @@ type Summary struct {
 	// Counters.
 	Msgs           int64            `json:"msgs"`
 	Errors         map[string]int64 `json:"errors,omitempty"`
+	Retries        int64            `json:"retries,omitempty"`            // §29: retry attempts issued by the driver
+	Replays        int64            `json:"idempotent_replays,omitempty"` // §29: OK responses served from the service idempotency cache
 	ThroughputMsgS float64          `json:"throughput_msg_s"`
 	ThroughputMiBS float64          `json:"throughput_mib_s"`
 
