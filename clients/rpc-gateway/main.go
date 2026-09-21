@@ -36,7 +36,7 @@ import (
 func main() {
 	addr := flag.String("grpc-addr", ":9430", "GatewayService gRPC ingress listen address")
 	backend := flag.String("backend", "localhost:9440", "default backend: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
-	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats")
+	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs (durable JetStream)")
 	var routes routeFlags
 	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable; grpc egress only)")
 	flag.Parse()
@@ -85,9 +85,9 @@ type router struct {
 
 func newRouter(transport, defaultTarget string, routes routeFlags) (*router, error) {
 	switch transport {
-	case "grpc", "nats":
+	case "grpc", "nats", "natsjs":
 	default:
-		return nil, fmt.Errorf("unknown -transport %q (grpc|nats)", transport)
+		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs)", transport)
 	}
 	r := &router{
 		transport:     transport,
@@ -123,6 +123,8 @@ func (r *router) client(target string) (rpc.Client, error) {
 	switch r.transport {
 	case "nats":
 		c, err = natsx.Dial(target)
+	case "natsjs":
+		c, err = natsx.DialJetStream(target)
 	default:
 		c, err = grpcx.Dial(target)
 	}
