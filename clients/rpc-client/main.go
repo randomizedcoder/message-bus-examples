@@ -25,15 +25,17 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
 
 func main() {
 	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a RabbitMQ host:port / amqp URL (rabbitmq*)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs | rabbitmq | rabbitmq-direct")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt")
 	amqpUser := flag.String("user", "admin", "RabbitMQ username (rabbitmq* transports)")
 	amqpPass := flag.String("pass", os.Getenv("RABBITMQ_PASS"), "RabbitMQ password (rabbitmq* transports; default $RABBITMQ_PASS)")
+	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt; QoS 0/1/2 are distinct semantics")
 	service := flag.String("service", "customer", "service to route to")
 	method := flag.String("method", "Lookup", "method to invoke")
 	customerID := flag.String("customer-id", "11111111-1111-1111-1111-111111111111", "customer id (uuid) for the Lookup payload")
@@ -83,8 +85,16 @@ func main() {
 			log.Fatalf("rpc-client: -stream requires -transport grpc (RabbitMQ RPC has no streaming)")
 		}
 		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeDirect)
+	case "mqtt":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (MQTT req/reply has no streaming)")
+		}
+		if *mqttQoS < 0 || *mqttQoS > 2 {
+			log.Fatalf("rpc-client: -mqtt-qos must be 0, 1, or 2, got %d", *mqttQoS)
+		}
+		client, err = mqttx.Dial(*addr, byte(*mqttQoS))
 	default:
-		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct)", *transport)
+		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-client: dial %s over %s: %v", *addr, *transport, err)

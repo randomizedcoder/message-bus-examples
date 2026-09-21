@@ -30,6 +30,7 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
@@ -37,12 +38,13 @@ import (
 func main() {
 	addr := flag.String("grpc-addr", ":9430", "GatewayService gRPC ingress listen address")
 	backend := flag.String("backend", "localhost:9440", "default backend: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a full amqp:// URL (rabbitmq*)")
-	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs | rabbitmq | rabbitmq-direct")
+	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt")
+	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt egress")
 	var routes routeFlags
 	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable; grpc egress only)")
 	flag.Parse()
 
-	router, err := newRouter(*egress, *backend, routes)
+	router, err := newRouter(*egress, *backend, byte(*mqttQoS), routes)
 	if err != nil {
 		log.Fatalf("rpc-gateway: %v", err)
 	}
@@ -78,21 +80,26 @@ func main() {
 type router struct {
 	transport     string
 	defaultTarget string
+	mqttQoS       byte
 	byService     map[string]string // service -> target override
 
 	mu      sync.Mutex
 	clients map[string]rpc.Client // target -> client
 }
 
-func newRouter(transport, defaultTarget string, routes routeFlags) (*router, error) {
+func newRouter(transport, defaultTarget string, mqttQoS byte, routes routeFlags) (*router, error) {
 	switch transport {
-	case "grpc", "nats", "natsjs", "rabbitmq", "rabbitmq-direct":
+	case "grpc", "nats", "natsjs", "rabbitmq", "rabbitmq-direct", "mqtt":
 	default:
-		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct)", transport)
+		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt)", transport)
+	}
+	if transport == "mqtt" && mqttQoS > 2 {
+		return nil, fmt.Errorf("-mqtt-qos must be 0, 1, or 2, got %d", mqttQoS)
 	}
 	r := &router{
 		transport:     transport,
 		defaultTarget: defaultTarget,
+		mqttQoS:       mqttQoS,
 		byService:     make(map[string]string, len(routes)),
 		clients:       make(map[string]rpc.Client),
 	}
@@ -131,6 +138,8 @@ func (r *router) client(target string) (rpc.Client, error) {
 		c, err = rabbitmqx.Dial(target, rabbitmqx.ModeReplyQueue)
 	case "rabbitmq-direct":
 		c, err = rabbitmqx.Dial(target, rabbitmqx.ModeDirect)
+	case "mqtt":
+		c, err = mqttx.Dial(target, r.mqttQoS)
 	default:
 		c, err = grpcx.Dial(target)
 	}

@@ -24,15 +24,17 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
 
 func main() {
 	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a RabbitMQ host:port / amqp URL (rabbitmq*)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream) | rabbitmq (reply queue) | rabbitmq-direct (Direct Reply-To)")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream) | rabbitmq (reply queue) | rabbitmq-direct (Direct Reply-To) | mqtt")
 	amqpUser := flag.String("user", "admin", "RabbitMQ username (rabbitmq* transports)")
 	amqpPass := flag.String("pass", os.Getenv("RABBITMQ_PASS"), "RabbitMQ password (rabbitmq* transports; default $RABBITMQ_PASS)")
+	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt; reported as mqtt-qos<N> so QoS runs stay distinctly labeled (§13)")
 	mode := flag.String("mode", "closed", "load mode: closed (concurrency+requests) | open (rate+duration)")
 	requests := flag.Int("requests", 10000, "closed mode: total request budget")
 	concurrency := flag.Int("concurrency", 32, "closed mode: number of concurrent workers")
@@ -56,10 +58,13 @@ func main() {
 		log.Fatalf("rpc-benchmark: %v", err)
 	}
 
-	// The driver programs to rpc.Client; both transports satisfy it, so the
-	// load engine (bench.go) is unchanged across transports.
+	// The driver programs to rpc.Client; every transport satisfies it, so the
+	// load engine (bench.go) is unchanged across transports. label is the
+	// transport as reported: mqtt carries its QoS so QoS 0/1/2 runs stay
+	// distinctly labeled (§13, they are not equivalent semantics).
 	var client rpc.Client
 	var err error
+	label := *transport
 	switch *transport {
 	case "grpc":
 		client, err = grpcx.Dial(*addr)
@@ -71,11 +76,17 @@ func main() {
 		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeReplyQueue)
 	case "rabbitmq-direct":
 		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeDirect)
+	case "mqtt":
+		if *mqttQoS < 0 || *mqttQoS > 2 {
+			log.Fatalf("rpc-benchmark: -mqtt-qos must be 0, 1, or 2, got %d", *mqttQoS)
+		}
+		label = fmt.Sprintf("mqtt-qos%d", *mqttQoS)
+		client, err = mqttx.Dial(*addr, byte(*mqttQoS))
 	default:
-		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct)", *transport)
+		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt)", *transport)
 	}
 	if err != nil {
-		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, *transport, err)
+		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, label, err)
 	}
 	defer client.Close()
 
@@ -92,9 +103,9 @@ func main() {
 
 	res := runBench(context.Background(), client, newReq, cfg)
 	if *asJSON {
-		emitJSON(*transport, cfg, res)
+		emitJSON(label, cfg, res)
 	} else {
-		printReport(*transport, cfg, res)
+		printReport(label, cfg, res)
 	}
 	// A run that produced no successful samples is a failure of the run itself.
 	if res.Summary.Count == 0 {
