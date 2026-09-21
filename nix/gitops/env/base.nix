@@ -55,6 +55,11 @@ in
         kind: Namespace
         metadata:
           name: ${constants.messageBus.rpc.namespace}
+        ---
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${constants.messageBus.grpcbus.namespace}
       '';
     }
     {

@@ -557,6 +557,26 @@ envelope (`-trace stdout`). See [docs/rpc/README.md](docs/rpc/README.md) for the
 conceptual guide — what RPC over a bus is, how each transport implements it, what
 durability changes, and why retries are not exactly-once.
 
+### gRPC-native message bus (streaming pub/sub)
+
+The RPC lab is request/reply; this is the *pub/sub* counterpart done purely over
+gRPC. A central broker (`grpcbrokerd`, deployed in the `grpcbus` namespace on a
+NodePort) fans each published `Message` out to every live subscriber of its topic,
+using a gRPC **server-stream** for the subscribe side — one publisher, many
+subscribers, no reply. Delivery is ephemeral fan-out (a subscriber sees only
+messages published while its stream is open), payloads are opaque bytes, and
+topics match exactly.
+
+```bash
+# One terminal: subscribe (server-stream); another: publish.
+nix run .#grpcbus-sub -- -addr 10.33.33.10:30450 -subject demo
+nix run .#grpcbus-pub -- -addr 10.33.33.10:30450 -subject demo -msg hello -count 5
+nix run .#grpcbus-broker                           # run a broker locally (:9450) for offline demos
+```
+
+See [docs/grpcbus/README.md](docs/grpcbus/README.md) for how it differs from the
+RPC lab and the other four buses.
+
 ---
 
 ## Cluster access & SSH auth (read this before SSHing to a node)
@@ -676,4 +696,5 @@ clients/                        # Go module: cmd/{natscli,rabbitmqcli,mqttcli,va
 rendered/                       # committed rendered manifests (ArgoCD source)
 docs/                           # secrets.md, resilience-testing.md, benchmarks.md, proto-bench.md, protobuf-grpc-benchmark-design.md
 docs/rpc/                       # RPC lab conceptual guide (README.md)
+docs/grpcbus/                   # gRPC-native message bus guide (README.md)
 ```

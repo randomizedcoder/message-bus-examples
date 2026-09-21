@@ -171,6 +171,8 @@
             # RPC lab gateway + service (§17).
             rpc-gateway-image             = busImagesMod.images.rpc-gateway;
             rpc-service-image             = busImagesMod.images.rpc-service;
+            # gRPC-native message bus broker.
+            grpc-broker-image             = busImagesMod.images.grpc-broker;
           }
           # Go pub/sub CLI clients (all four binaries in one derivation).
           // { message-bus-clients = clients.package; }
