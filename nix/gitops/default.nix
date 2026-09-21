@@ -34,6 +34,9 @@ let
   # proto-bench region agents (gRPC in P2; bus responders in P3)
   workloads = import (envDir + "/workloads.nix") { inherit pkgs lib; };
 
+  # RPC lab gateway + service (§17): gRPC now; bus transports reuse gateway-B.
+  rpc = import (envDir + "/rpc.nix") { inherit pkgs lib; };
+
   # Combine all manifests
   allManifests = base.manifests ++ argocd.manifests ++ cilium.manifests
     ++ storage.manifests
@@ -42,7 +45,8 @@ let
     ++ mqtt.manifests
     ++ valkey.manifests
     ++ monitoring.manifests
-    ++ workloads.manifests;
+    ++ workloads.manifests
+    ++ rpc.manifests;
 
   emitStep = m:
     if m ? source then ''

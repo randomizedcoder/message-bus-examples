@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpc-gateway
+  namespace: rpc
+  labels:
+    app.kubernetes.io/name: rpc-gateway
+    app: rpc-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rpc-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rpc-gateway
+        app: rpc-gateway
+    spec:
+      containers:
+      - name: rpc-gateway
+        image: messagebus.local/rpc-gateway:0.1.0
+        imagePullPolicy: Never
+        args:
+        - -grpc-addr=:9430
+        - -backend=rpc-service.rpc.svc.cluster.local:9440
+        ports:
+        - containerPort: 9430
+          name: grpc
+        readinessProbe:
+          tcpSocket:
+            port: 9430
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 9430
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: "1"
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpc-gateway
+  namespace: rpc
+  labels:
+    app.kubernetes.io/name: rpc-gateway
+spec:
+  type: NodePort
+  selector:
+    app: rpc-gateway
+  ports:
+  - name: grpc
+    port: 9430
+    targetPort: 9430
+    nodePort: 30430
+

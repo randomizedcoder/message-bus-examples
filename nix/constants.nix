@@ -254,6 +254,27 @@ rec {
       nodePortGrpcBase  = 30710;  # + node index: cp0 30710, cp1 30711, cp2 30712, w3 30713
       nodePortGlobalApi = 30700;  # "global API" endpoint (WatchWorkload/log demos), points at cp0's pod
     };
+
+    # RPC lab (§17): the routing gateway + terminal service, deployed in-cluster
+    # so the later bus transports get a gateway-B next to the brokers. This phase
+    # is gRPC only: the host driver runs a gateway-A that forwards to gateway-B on
+    # its NodePort, which forwards to rpc-service on its ClusterIP
+    #   host rpc-benchmark → gateway-A (host) → gateway-B (NodePort) → rpc-service.
+    # Everything speaks the same GatewayService.Call, so every hop is uniform.
+    rpc = {
+      namespace = "rpc";
+      gateway = {
+        image    = "messagebus.local/rpc-gateway";
+        tag      = "0.1.0";
+        grpcPort = 9430;         # plaintext h2c inside the cluster
+        nodePort = 30430;        # gateway-B ingress, reachable from the host
+      };
+      service = {
+        image    = "messagebus.local/rpc-service";
+        tag      = "0.1.0";
+        grpcPort = 9440;         # ClusterIP only; reached via gateway-B
+      };
+    };
   };
 
   # ─── proto-bench host driver defaults ──────────────────────────────

@@ -168,6 +168,9 @@
             mosquitto-sysexporter-image     = busImagesMod.images.mosquitto-sysexporter;
             # proto-bench region-agent (first Nix-built Go-binary image).
             region-agent-image            = busImagesMod.images.region-agent;
+            # RPC lab gateway + service (§17).
+            rpc-gateway-image             = busImagesMod.images.rpc-gateway;
+            rpc-service-image             = busImagesMod.images.rpc-service;
           }
           # Go pub/sub CLI clients (all four binaries in one derivation).
           // { message-bus-clients = clients.package; }
@@ -195,6 +198,7 @@
             soakScripts = import (nixDir + "/soak-scripts.nix") { inherit pkgs; };
             benchScripts = import (nixDir + "/bench-scripts.nix") { inherit pkgs; };
             protoBenchScripts = import (nixDir + "/proto-bench-scripts.nix") { inherit pkgs; };
+            rpcScripts = import (nixDir + "/rpc-scripts.nix") { inherit pkgs; };
             integrationScripts = import (nixDir + "/integration-scripts.nix") { inherit pkgs; };
             imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
@@ -323,6 +327,11 @@
               type = "app";
               program = "${protoBenchScripts.protoBench}/bin/k8s-proto-bench";
               meta.description = "Drive benchcli across the region-agents and render a proto-bench run (run.json + results.md)";
+            };
+            k8s-rpc-bench = {
+              type = "app";
+              program = "${rpcScripts.rpcBench}/bin/k8s-rpc-bench";
+              meta.description = "Drive rpc-benchmark through host gateway-A → in-cluster gateway-B → rpc-service over gRPC";
             };
           }
 
