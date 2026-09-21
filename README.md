@@ -496,6 +496,21 @@ Grafana dashboard (uid `protobench`). See
 [docs/protobuf-grpc-benchmark-design.md](docs/protobuf-grpc-benchmark-design.md)
 for the full design.
 
+**Status — implemented (design phases P0–P4 complete).** Delivered end to end:
+the `workloads.v1` schema with checked-in generated Go (proto / gRPC / vtproto),
+the codec / pool / envelope / corpus / HDR library, the `region-agent` server and
+`benchcli` driver, every transport — gRPC unary plus NATS, RabbitMQ, Valkey and
+MQTT request/reply — the durable tier-B telemetry flows (NATS JetStream, RabbitMQ
+quorum queues, Valkey Streams) and the NATS JetStream logs fan-out, all six run
+modes, the `k8s-proto-bench` host harness, and the Grafana `protobench` dashboard.
+Two things are out of scope **by design**: the gRPC streaming RPCs
+(`StreamLogs` / `WatchWorkload` / bidi) are left `Unimplemented`; and since the
+agent forces one gRPC codec per deployment (proto and vtproto are wire-identical,
+so both run against a proto agent, while protojson needs a protojson-profile
+agent), a gRPC+protojson cell is only measured when the agent runs that profile —
+the bus transports carry any codec via the envelope's content type. The design
+doc tracks the phase-by-phase specification and acceptance criteria.
+
 ---
 
 ## Cluster access & SSH auth (read this before SSHing to a node)
