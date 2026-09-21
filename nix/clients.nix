@@ -50,6 +50,10 @@ let
       "rpc-service"
       # RPC load driver (§25): rpc.Call workload with HDR latency + CO correction.
       "rpc-benchmark"
+      # gRPC-native message bus: the central broker + its pub/sub client, a fifth
+      # bus alongside NATS/RabbitMQ/MQTT/Valkey but over gRPC server-streaming.
+      "grpcbus/grpcbrokerd"
+      "grpcbus/grpcbuscli"
     ];
     meta = {
       description = "Message-bus pub/sub CLI clients (NATS, RabbitMQ, MQTT, ValKey)";
@@ -82,6 +86,8 @@ let
     { app = "mqtt-sub";     bin = "mqttcli";     sub = "sub"; }
     { app = "valkey-pub";   bin = "valkeycli";   sub = "pub"; }
     { app = "valkey-sub";   bin = "valkeycli";   sub = "sub"; }
+    { app = "grpcbus-pub";  bin = "grpcbuscli";  sub = "pub"; }
+    { app = "grpcbus-sub";  bin = "grpcbuscli";  sub = "sub"; }
   ];
 
   mkWrapper = d: pkgs.writeShellApplication {
@@ -185,7 +191,18 @@ let
     };
   };
 
-  apps = busApps // exampleApps // benchApps // rpcApps;
+  # gRPC-native message bus: the central broker, host-runnable for local demos
+  # (`nix run .#grpcbus-broker -- -grpc-addr :9450`). The pub/sub clients are the
+  # grpcbus-pub / grpcbus-sub wrappers built from `defs` above.
+  grpcbusApps = {
+    grpcbus-broker = {
+      type = "app";
+      program = "${clients}/bin/grpcbrokerd";
+      meta.description = "gRPC message-bus broker: fans each published Message out to every live subscriber of its topic (server-streaming)";
+    };
+  };
+
+  apps = busApps // exampleApps // benchApps // rpcApps // grpcbusApps;
 in
 {
   package = clients;
