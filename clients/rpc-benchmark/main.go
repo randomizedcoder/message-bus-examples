@@ -24,11 +24,12 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 )
 
 func main() {
-	addr := flag.String("addr", "localhost:9430", "GatewayService endpoint (gateway or service)")
-	transport := flag.String("transport", "grpc", "transport (grpc only in this phase)")
+	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats")
 	mode := flag.String("mode", "closed", "load mode: closed (concurrency+requests) | open (rate+duration)")
 	requests := flag.Int("requests", 10000, "closed mode: total request budget")
 	concurrency := flag.Int("concurrency", 32, "closed mode: number of concurrent workers")
@@ -39,10 +40,6 @@ func main() {
 	region := flag.String("region", "us-west-2", "region for the Lookup payload")
 	asJSON := flag.Bool("json", false, "emit the result as a JSON object instead of the text report")
 	flag.Parse()
-
-	if *transport != "grpc" {
-		log.Fatalf("rpc-benchmark: only -transport grpc is wired in this phase, got %q", *transport)
-	}
 
 	cfg := benchConfig{
 		mode:        *mode,
@@ -56,9 +53,20 @@ func main() {
 		log.Fatalf("rpc-benchmark: %v", err)
 	}
 
-	client, err := grpcx.Dial(*addr)
+	// The driver programs to rpc.Client; both transports satisfy it, so the
+	// load engine (bench.go) is unchanged across transports.
+	var client rpc.Client
+	var err error
+	switch *transport {
+	case "grpc":
+		client, err = grpcx.Dial(*addr)
+	case "nats":
+		client, err = natsx.Dial(*addr)
+	default:
+		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats)", *transport)
+	}
 	if err != nil {
-		log.Fatalf("rpc-benchmark: dial %s: %v", *addr, err)
+		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, *transport, err)
 	}
 	defer client.Close()
 

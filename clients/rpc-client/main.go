@@ -25,10 +25,12 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 )
 
 func main() {
-	addr := flag.String("addr", "localhost:9430", "GatewayService endpoint (gateway or service)")
+	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats")
 	service := flag.String("service", "customer", "service to route to")
 	method := flag.String("method", "Lookup", "method to invoke")
 	customerID := flag.String("customer-id", "11111111-1111-1111-1111-111111111111", "customer id (uuid) for the Lookup payload")
@@ -47,9 +49,27 @@ func main() {
 		log.Fatalf("rpc-client: -count must be >= 1, got %d", *count)
 	}
 
-	client, err := grpcx.Dial(*addr)
+	// client is the interface both transports satisfy; gclient is the concrete
+	// gRPC client, needed only for -stream (NATS Core has no streaming, §11).
+	var (
+		client  rpc.Client
+		gclient *grpcx.Client
+		err     error
+	)
+	switch *transport {
+	case "grpc":
+		gclient, err = grpcx.Dial(*addr)
+		client = gclient
+	case "nats":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (NATS Core req/reply has no streaming)")
+		}
+		client, err = natsx.Dial(*addr)
+	default:
+		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats)", *transport)
+	}
 	if err != nil {
-		log.Fatalf("rpc-client: dial %s: %v", *addr, err)
+		log.Fatalf("rpc-client: dial %s over %s: %v", *addr, *transport, err)
 	}
 	defer client.Close()
 
@@ -60,7 +80,7 @@ func main() {
 
 	exit := 0
 	if *stream {
-		if err := callStream(client, *service, *method, payload, *idemKey, *timeout, *count, *asJSON); err != nil {
+		if err := callStream(gclient, *service, *method, payload, *idemKey, *timeout, *count, *asJSON); err != nil {
 			exit = 1
 		}
 	} else {

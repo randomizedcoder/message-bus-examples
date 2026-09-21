@@ -30,16 +30,18 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 )
 
 func main() {
 	addr := flag.String("grpc-addr", ":9430", "GatewayService gRPC ingress listen address")
-	backend := flag.String("backend", "localhost:9440", "default backend GatewayService target (host:port)")
+	backend := flag.String("backend", "localhost:9440", "default backend: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
+	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats")
 	var routes routeFlags
-	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable)")
+	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable; grpc egress only)")
 	flag.Parse()
 
-	router, err := newRouter(*backend, routes)
+	router, err := newRouter(*egress, *backend, routes)
 	if err != nil {
 		log.Fatalf("rpc-gateway: %v", err)
 	}
@@ -60,7 +62,7 @@ func main() {
 		srv.GracefulStop()
 	}()
 
-	log.Printf("rpc-gateway: proxying GatewayService on %s -> default backend %s (%d route override(s))", lis.Addr(), *backend, len(routes))
+	log.Printf("rpc-gateway: proxying GatewayService on %s -> default backend %s over %s (%d route override(s))", lis.Addr(), *backend, *egress, len(routes))
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("rpc-gateway: serve: %v", err)
 	}
@@ -69,7 +71,11 @@ func main() {
 // router is the gateway-A Handler: it forwards each request to the backend
 // selected by its service, stamping the gateway-A timeline around the hop. It
 // caches one rpc.Client per distinct backend target so connections are reused.
+// The egress transport (grpc | nats) is chosen once for the gateway; the router
+// stays payload-blind either way — over NATS the subject is derived from the
+// envelope's service.method, so a single connection serves every service.
 type router struct {
+	transport     string
 	defaultTarget string
 	byService     map[string]string // service -> target override
 
@@ -77,8 +83,14 @@ type router struct {
 	clients map[string]rpc.Client // target -> client
 }
 
-func newRouter(defaultTarget string, routes routeFlags) (*router, error) {
+func newRouter(transport, defaultTarget string, routes routeFlags) (*router, error) {
+	switch transport {
+	case "grpc", "nats":
+	default:
+		return nil, fmt.Errorf("unknown -transport %q (grpc|nats)", transport)
+	}
 	r := &router{
+		transport:     transport,
 		defaultTarget: defaultTarget,
 		byService:     make(map[string]string, len(routes)),
 		clients:       make(map[string]rpc.Client),
@@ -104,7 +116,16 @@ func (r *router) client(target string) (rpc.Client, error) {
 	if c, ok := r.clients[target]; ok {
 		return c, nil
 	}
-	c, err := grpcx.Dial(target)
+	var (
+		c   rpc.Client
+		err error
+	)
+	switch r.transport {
+	case "nats":
+		c, err = natsx.Dial(target)
+	default:
+		c, err = grpcx.Dial(target)
+	}
 	if err != nil {
 		return nil, err
 	}
