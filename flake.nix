@@ -199,6 +199,7 @@
             benchScripts = import (nixDir + "/bench-scripts.nix") { inherit pkgs; };
             protoBenchScripts = import (nixDir + "/proto-bench-scripts.nix") { inherit pkgs; };
             rpcScripts = import (nixDir + "/rpc-scripts.nix") { inherit pkgs; };
+            rpcChaosScripts = import (nixDir + "/rpc-chaos-scripts.nix") { inherit pkgs; };
             integrationScripts = import (nixDir + "/integration-scripts.nix") { inherit pkgs; };
             imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
@@ -332,6 +333,11 @@
               type = "app";
               program = "${rpcScripts.rpcBench}/bin/k8s-rpc-bench";
               meta.description = "Drive rpc-benchmark through host gateway-A → in-cluster gateway-B → rpc-service over gRPC";
+            };
+            k8s-rpc-chaos = {
+              type = "app";
+              program = "${rpcChaosScripts.rpcChaos}/bin/k8s-rpc-chaos";
+              meta.description = "Inject a §28 failure (backend / gateway-B / gateway-A) mid-run and measure RPC ride-through and recovery";
             };
           }
 
