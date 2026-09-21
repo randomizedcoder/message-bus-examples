@@ -23,6 +23,9 @@ certs/
 chaos-logs/
 chaos-logs-*/
 
+# Integration smoke-test logs (pass/fail table + per-bus sub/pub captures)
+integration-logs/
+
 # Stray compiled Go binaries left by a bare `go build` in the module. The
 # real binaries only ever come from `nix build`/`nix run`; each is named
 # after its leaf package directory. Listed explicitly so no source .go

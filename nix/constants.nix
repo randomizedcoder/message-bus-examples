@@ -370,6 +370,21 @@ rec {
     settleSec      = 3;                          # let final scrapes land before querying Prometheus
   };
 
+  # ─── Integration smoke-test defaults ───────────────────────────────
+  # A short pass/fail check: bring up pub+sub for all four buses at once in
+  # their HA/durable modes (NATS JetStream, RabbitMQ quorum, ValKey via
+  # Sentinel, MQTT bridged), publish N known messages per bus, and assert every
+  # one is received. Unlike chaos/soak/bench (which report, never fail), this
+  # exits non-zero on any loss. No OTel metrics, so it does not touch the 9200
+  # host-port range shared by soak/bench. See nix/integration-scripts.nix.
+  integration = {
+    defaultBuses   = "nats,rabbitmq,valkey,mqtt";
+    defaultCount   = 20;             # messages published per bus
+    defaultTimeout = "15s";          # subscriber collection window (at-least-once → collect, then verify distinct)
+    defaultSettle  = "2s";           # let the subscriber connect before publishing
+    defaultLogDir  = "./integration-logs";
+  };
+
   # ─── ArgoCD service (NodePort reachable from host) ─────────────────
   argocd = {
     nodePortHttps = 30443;

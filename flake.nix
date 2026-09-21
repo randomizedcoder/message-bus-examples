@@ -195,6 +195,7 @@
             soakScripts = import (nixDir + "/soak-scripts.nix") { inherit pkgs; };
             benchScripts = import (nixDir + "/bench-scripts.nix") { inherit pkgs; };
             protoBenchScripts = import (nixDir + "/proto-bench-scripts.nix") { inherit pkgs; };
+            integrationScripts = import (nixDir + "/integration-scripts.nix") { inherit pkgs; };
             imageImportScripts = import (nixDir + "/image-import.nix") { inherit pkgs; };
             rawApps =
           {
@@ -294,6 +295,16 @@
             k8s-soak-test = {
               type = "app";
               program = "${soakScripts.soakTest}/bin/k8s-soak-test";
+            };
+          }
+
+          # All-clients integration smoke test: pub+sub every bus at once
+          # (HA modes) and assert delivery; exits non-zero on any loss.
+          // {
+            k8s-integration-test = {
+              type = "app";
+              program = "${integrationScripts.integrationTest}/bin/k8s-integration-test";
+              meta.description = "Run all four bus clients at once and assert every message is delivered (exits non-zero on loss)";
             };
           }
 
