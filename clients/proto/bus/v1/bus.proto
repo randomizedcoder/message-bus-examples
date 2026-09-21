@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+// Package bus.v1 is the wire contract for the gRPC-native message bus: a central
+// broker that fans a published Message out to every live subscriber of its topic,
+// using gRPC server-streaming for the subscribe side. It is a distinct track from
+// rpc.v1 (a routing envelope for request/reply) and workloads.v1 (a measurement
+// wrapper): where those carry an opaque/typed payload for a *call*, bus.v1 is
+// fire-and-forget pub/sub — one publisher, many subscribers, no reply.
+//
+// Delivery is ephemeral fan-out (design: gRPC bus PR 1): a subscriber receives
+// only messages published while its stream is open; there is no history, replay,
+// or acknowledgement. A payload is opaque bytes so anything can be published;
+// content_type/headers describe it for the subscriber without the broker linking
+// a schema. Topics match exactly (no wildcards) — the broker keys subscribers by
+// the literal topic string.
+package bus.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/bus/v1;busv1";
+
+// Message is one published item. The broker never decodes payload; it routes on
+// topic and forwards the whole Message unchanged to each subscriber.
+message Message {
+  // Exact-match routing key, e.g. "demo" or "orders.eu". Bounded so it can never
+  // become an unbounded metrics label (the broker deliberately does NOT label its
+  // metrics by topic — cardinality).
+  string topic = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+
+  // Opaque application payload; the broker treats it as bytes.
+  bytes payload = 2 [(buf.validate.field).bytes.max_len = 1048576]; // <= 1 MiB
+
+  // Optional media type describing payload, e.g. "text/plain" or a proto
+  // type URL. Purely informational for subscribers.
+  string content_type = 3 [(buf.validate.field).string.max_len = 128];
+
+  // Optional application headers. Bounded so a subscriber can trust the map size.
+  map<string, string> headers = 4 [(buf.validate.field).map.max_pairs = 32];
+
+  // Publisher-assigned, 1-based sequence within a publish run (0 = unset). Lets a
+  // subscriber detect the ephemeral bus's gaps/drops without the broker tracking
+  // per-subscriber state.
+  uint64 seq = 5;
+
+  // Originating publisher identity (low cardinality; for demos/tracing).
+  string publisher_id = 6 [(buf.validate.field).string.max_len = 128];
+
+  // When the publisher created the message.
+  google.protobuf.Timestamp published_at = 7;
+}
+
+// PublishRequest carries one Message to fan out.
+message PublishRequest {
+  Message message = 1 [(buf.validate.field).required = true];
+}
+
+// PublishResponse reports how many live subscribers the message was delivered to
+// (0 is normal — an ephemeral bus drops a message nobody is subscribed for).
+message PublishResponse {
+  uint64 delivered = 1;
+}
+
+// SubscribeRequest opens a server-stream of every Message published to topic
+// while the stream is open.
+message SubscribeRequest {
+  string topic = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+
+  // Optional subscriber identity (low cardinality; for demos/tracing).
+  string subscriber_id = 2 [(buf.validate.field).string.max_len = 128];
+}
+
+// BrokerService is the central gRPC message bus. Publish is unary; Subscribe is a
+// server-stream that lives for the subscriber's session and yields each fan-out
+// Message. (Message is reused as the Subscribe response element — the unique /
+// standard-name lint rules are disabled module-wide in buf.yaml.)
+service BrokerService {
+  rpc Publish(PublishRequest) returns (PublishResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream Message);
+}
