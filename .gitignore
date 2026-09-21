@@ -26,6 +26,14 @@ chaos-logs-*/
 # Integration smoke-test logs (pass/fail table + per-bus sub/pub captures)
 integration-logs/
 
+# Vendored Go dependencies. `go mod vendor` writes clients/vendor for local
+# `go build`/`go test`/gopls, but it must NEVER be committed: Nix flakes read
+# only git-tracked files, and buildGoModule reconstructs the same deps from
+# `goVendorHash` — so a committed vendor/ makes buildGoModule refuse the hash
+# ("vendor folder exists, please set 'vendorHash = null'") and drags 1971
+# third-party files (some gofmt-dirty under newer Go) into every check.
+clients/vendor/
+
 # Stray compiled Go binaries left by a bare `go build` in the module. The
 # real binaries only ever come from `nix build`/`nix run`; each is named
 # after its leaf package directory. Listed explicitly so no source .go
