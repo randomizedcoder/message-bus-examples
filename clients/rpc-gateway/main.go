@@ -33,6 +33,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/tracing"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
@@ -42,9 +43,16 @@ func main() {
 	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt | valkey | valkey-stream")
 	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt egress")
 	valkeyPass := flag.String("valkey-pass", os.Getenv("VALKEY_PASSWORD"), "Valkey primary password for valkey* egress (default $VALKEY_PASSWORD); -backend is then the comma-separated Sentinel list")
+	traceMode := flag.String("trace", "off", "distributed tracing (§23): off | stdout (stdout writes each span as JSON to stderr)")
 	var routes routeFlags
 	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable; grpc egress only)")
 	flag.Parse()
+
+	shutdownTracing, err := tracing.NewProvider("rpc-gateway", *traceMode)
+	if err != nil {
+		log.Fatalf("rpc-gateway: tracing: %v", err)
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	router, err := newRouter(*egress, *backend, byte(*mqttQoS), *valkeyPass, routes)
 	if err != nil {
@@ -57,7 +65,9 @@ func main() {
 		log.Fatalf("rpc-gateway: listen %s: %v", *addr, err)
 	}
 	srv := grpc.NewServer()
-	grpcx.RegisterServer(srv, router)
+	// Server span for the gateway-A leg: extract the caller's trace from the
+	// envelope and continue it; the forward hop below adds a nested client span.
+	grpcx.RegisterServer(srv, rpc.NewTracingHandler(router))
 	reflection.Register(srv)
 
 	go func() {
@@ -154,6 +164,10 @@ func (r *router) client(target string) (rpc.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Trace the forward hop: this client span nests under the gateway-A server
+	// span (via the ctx threaded from Handle) and injects the trace context into
+	// the envelope forwarded to the backend (§23).
+	c = rpc.NewTracingClient(c)
 	r.clients[target] = c
 	return c, nil
 }

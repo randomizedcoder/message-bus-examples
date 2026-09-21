@@ -28,6 +28,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/tracing"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
@@ -47,6 +48,7 @@ func main() {
 	count := flag.Int("count", 1, "number of identical calls to issue")
 	stream := flag.Bool("stream", false, "issue the calls over one bidi CallStream instead of unary Call")
 	asJSON := flag.Bool("json", false, "emit one JSON object per call instead of the text summary")
+	traceMode := flag.String("trace", "off", "distributed tracing (§23): off | stdout (stdout writes each span as JSON to stderr)")
 	flag.Parse()
 
 	if *service != "customer" || *method != "Lookup" {
@@ -55,6 +57,12 @@ func main() {
 	if *count < 1 {
 		log.Fatalf("rpc-client: -count must be >= 1, got %d", *count)
 	}
+
+	shutdownTracing, terr := tracing.NewProvider("rpc-client", *traceMode)
+	if terr != nil {
+		log.Fatalf("rpc-client: tracing: %v", terr)
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	// client is the interface both transports satisfy; gclient is the concrete
 	// gRPC client, needed only for -stream (NATS Core has no streaming, §11).
@@ -111,6 +119,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("rpc-client: dial %s over %s: %v", *addr, *transport, err)
 	}
+	// Trace the unary calls (§23): the client span injects trace context into the
+	// envelope so the gateway and service continue the same trace. (-stream uses
+	// the raw gRPC client below and is not traced.)
+	client = rpc.NewTracingClient(client)
 	defer client.Close()
 
 	payload := &benchmarkv1.CustomerLookupRequest{
@@ -130,6 +142,9 @@ func main() {
 			}
 		}
 	}
+	// os.Exit skips deferred shutdowns, so flush the tracer explicitly or the
+	// client spans (batch-exported) are lost (§23).
+	_ = shutdownTracing(context.Background())
 	os.Exit(exit)
 }
 

@@ -31,6 +31,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/tracing"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
@@ -46,14 +47,23 @@ func main() {
 	valkeyPass := flag.String("valkey-pass", os.Getenv("VALKEY_PASSWORD"), "Valkey primary password for the -valkey/-valkey-stream responders (default $VALKEY_PASSWORD)")
 	idemTTL := flag.Duration("idempotency-ttl", 5*time.Minute, "how long a completed operation is remembered for retry dedup (0 disables)")
 	validate := flag.Bool("validate", true, "run protovalidate on decoded request payloads")
+	traceMode := flag.String("trace", "off", "distributed tracing (§23): off | stdout (stdout writes each span as JSON to stderr)")
 	flag.Parse()
+
+	shutdownTracing, err := tracing.NewProvider("rpc-service", *traceMode)
+	if err != nil {
+		log.Fatalf("rpc-service: tracing: %v", err)
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	mux := rpc.NewMux(*validate)
 	registerCustomer(mux)
 	registerEcho(mux)
 
 	cache := rpc.NewIdempotencyCache(*idemTTL)
-	handler := idempotent(cache, mux)
+	// Trace the whole server side (idempotency + dispatch) as one span, extracting
+	// the caller's trace context from the envelope metadata (§23).
+	handler := rpc.NewTracingHandler(idempotent(cache, mux))
 
 	// Optional NATS responder: the same handler serves the §11 NATS Core path,
 	// so a request arriving over gRPC or NATS is dispatched and deduped identically.
