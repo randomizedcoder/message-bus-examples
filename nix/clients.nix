@@ -43,6 +43,11 @@ let
       "workloads/benchcli"
       # proto-bench in-cluster server (gRPC services in P2; bus responders P3).
       "workloads/region-agent"
+      # RPC lab (§17): the uniform GatewayService trio — a client, an ingress
+      # gateway, and the terminal backend service — all speaking rpc.v1.Call.
+      "rpc-client"
+      "rpc-gateway"
+      "rpc-service"
     ];
     meta = {
       description = "Message-bus pub/sub CLI clients (NATS, RabbitMQ, MQTT, ValKey)";
@@ -152,7 +157,28 @@ let
     };
   };
 
-  apps = busApps // exampleApps // benchApps;
+  # RPC lab (§17): the reference gRPC trio, host-runnable end to end.
+  # `nix run .#rpc-service` (backend :9440) + `nix run .#rpc-gateway` (ingress
+  # :9430 -> backend) + `nix run .#rpc-client -- -service customer -method Lookup`.
+  rpcApps = {
+    rpc-service = {
+      type = "app";
+      program = "${clients}/bin/rpc-service";
+      meta.description = "RPC lab backend: GatewayService whose handlers run the demo methods + idempotency cache";
+    };
+    rpc-gateway = {
+      type = "app";
+      program = "${clients}/bin/rpc-gateway";
+      meta.description = "RPC lab ingress gateway: forwards routed rpc.v1 envelopes to a backend GatewayService";
+    };
+    rpc-client = {
+      type = "app";
+      program = "${clients}/bin/rpc-client";
+      meta.description = "RPC lab client: builds a routed rpc.v1 envelope and calls a GatewayService endpoint";
+    };
+  };
+
+  apps = busApps // exampleApps // benchApps // rpcApps;
 in
 {
   package = clients;
