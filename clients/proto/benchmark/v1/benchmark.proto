@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+// Package benchmark.v1 holds representative application payloads for the RPC lab
+// (suggested-improvements §6). These are what get wrapped in rpc.v1.Request /
+// Response.payload (google.protobuf.Any). They deliberately exercise real
+// enterprise-shaped data rather than opaque byte blobs, so protobuf-vs-JSON
+// comparisons are meaningful. None carry an Envelope — the rpc.v1 envelope wraps
+// them.
+package benchmark.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/benchmark/v1;benchmarkv1";
+
+// The canonical small request/response pair (§6). "customer.Lookup".
+message CustomerLookupRequest {
+  string customer_id = 1 [(buf.validate.field).string.uuid = true];
+  string region = 2 [(buf.validate.field).string.pattern = "^[a-z]{2}-[a-z]+-[0-9]$"];
+}
+
+message CustomerLookupResponse {
+  string customer_id = 1 [(buf.validate.field).string.uuid = true];
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  string email = 3 [(buf.validate.field).string.email = true];
+  repeated string account_ids = 4 [(buf.validate.field).repeated = {
+    max_items: 64
+    items: {
+      string: {uuid: true}
+    }
+  }];
+}
+
+// Tier is a small closed enum used by AllTypes to exercise enum encoding.
+enum Tier {
+  TIER_UNSPECIFIED = 0;
+  TIER_FREE = 1;
+  TIER_PRO = 2;
+  TIER_ENTERPRISE = 3;
+}
+
+// Nested is a small sub-message so AllTypes covers the nested-message case.
+message Nested {
+  string label = 1 [(buf.validate.field).string.max_len = 128];
+  int32 depth = 2 [(buf.validate.field).int32.gte = 0];
+}
+
+// AllTypes is the "kitchen sink" payload (§6): every scalar family, signed and
+// unsigned, floating point, bool, enum, timestamp, optional, nested message,
+// repeated, map, and a raw bytes blob. Used for representative protobuf-vs-JSON
+// serialization comparisons and as a size-controlled payload.
+message AllTypes {
+  string str = 1 [(buf.validate.field).string.max_len = 4096];
+  int32 i32 = 2;
+  int64 i64 = 3;
+  uint32 u32 = 4;
+  uint64 u64 = 5;
+  sint32 s32 = 6;
+  sint64 s64 = 7;
+  fixed64 fx64 = 8;
+  float f32 = 9 [(buf.validate.field).float.finite = true];
+  double f64 = 10 [(buf.validate.field).double.finite = true];
+  bool flag = 11;
+  Tier tier = 12 [(buf.validate.field).enum.defined_only = true];
+  google.protobuf.Timestamp when = 13;
+  optional string note = 14 [(buf.validate.field).string.max_len = 256];
+  Nested nested = 15;
+  repeated int64 samples = 16 [(buf.validate.field).repeated.max_items = 1024];
+  map<string, string> attributes = 17 [(buf.validate.field).map.max_pairs = 64];
+  // Controlled-size payload for the size sweep (100B..1MiB, §26).
+  bytes blob = 18 [(buf.validate.field).bytes.max_len = 1048576];
+}

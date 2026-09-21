@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+// Package rpc.v1 is the transport-independent RPC envelope for the RPC lab
+// (suggested-improvements §4). It is a separate track from workloads.v1: where
+// workloads.v1.Envelope is a *measurement/correlation* wrapper embedded as
+// field 1 of typed domain messages, rpc.v1 is a *routing* envelope carrying an
+// opaque google.protobuf.Any payload plus service/method so a gateway can route
+// any application message without linking its schema (§5). The two coexist —
+// an Any payload may itself be a workloads.v1 message that carries its own
+// measurement Envelope.
+package rpc.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1;rpcv1";
+
+// Status is the transport-neutral outcome of a Call (§4). It is deliberately a
+// small closed set; richer detail rides in Response.error_message.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_OK = 1;
+  STATUS_INVALID_ARGUMENT = 2;
+  STATUS_NOT_FOUND = 3;
+  STATUS_TIMEOUT = 4;
+  STATUS_UNAVAILABLE = 5; // e.g. NATS no-responder, gateway-B unreachable
+  STATUS_INTERNAL = 6;
+}
+
+// Request is what the client hands the gateway. The gateway routes on
+// service/method and forwards payload untouched (§4, §5). Correlation across a
+// transport hop is by request_id; idempotency_key identifies the logical
+// operation across retries (they are NOT the same — §29).
+message Request {
+  // Unique identifier for this individual RPC attempt.
+  string request_id = 1 [(buf.validate.field).string.uuid = true];
+
+  // Logical destination service (routing key), e.g. "customer".
+  string service = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[a-z][a-z0-9_.-]*$"
+  }];
+
+  // Logical service method, e.g. "Lookup".
+  string method = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[A-Za-z][A-Za-z0-9_]*$"
+  }];
+
+  // Originating client/gateway identity (metrics + tracing, low cardinality).
+  string client_id = 4 [(buf.validate.field).string.max_len = 128];
+
+  // Distributed tracing id (W3C traceparent trace-id, 32 hex chars) when set;
+  // full context propagation lands in the tracing PR (§23).
+  string trace_id = 5 [(buf.validate.field).string.max_len = 64];
+
+  // Identifies the logical operation across retries; drives the service-side
+  // idempotency cache (§29). Free-form but bounded.
+  string idempotency_key = 6 [(buf.validate.field).string.max_len = 128];
+
+  // T0: benchmark client starts the RPC (§20).
+  google.protobuf.Timestamp client_sent_at = 7 [(buf.validate.field).required = true];
+
+  // Positive, bounded deadline (§7). Zero is not allowed.
+  google.protobuf.Duration timeout = 8 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).duration = {
+      gt: {seconds: 0}
+      lte: {seconds: 300}
+    }
+  ];
+
+  // Carefully bounded so it never becomes a Prometheus cardinality source (§22).
+  map<string, string> metadata = 9 [(buf.validate.field).map.max_pairs = 32];
+
+  // Opaque application payload; type_url preserves the concrete type (§5).
+  google.protobuf.Any payload = 10 [(buf.validate.field).required = true];
+}
+
+// Response is what the gateway returns. Fields 1-10 mirror Request plus outcome
+// (§4); fields 11-17 carry the per-stage timestamps for latency decomposition
+// (§20 T1,T3,T4,T6,T7,T9,T10). T0 is Request.client_sent_at and T12 is measured
+// client-side; T2/T5/T8/T11 (serialize/deserialize boundaries) are measured
+// locally and not carried on the wire.
+message Response {
+  string request_id = 1 [(buf.validate.field).string.uuid = true];
+  string service = 2 [(buf.validate.field).string.max_len = 128];
+  string method = 3 [(buf.validate.field).string.max_len = 128];
+
+  google.protobuf.Timestamp client_sent_at = 4;      // T0, echoed
+  google.protobuf.Timestamp server_received_at = 5;  // gateway-B received request
+  google.protobuf.Timestamp server_sent_at = 6;      // gateway-B sent response
+
+  Status status = 7 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
+  string error_message = 8 [(buf.validate.field).string.max_len = 1024];
+
+  map<string, string> metadata = 9 [(buf.validate.field).map.max_pairs = 32];
+
+  // Present iff status == STATUS_OK; empty on error.
+  google.protobuf.Any payload = 10;
+
+  // Detailed stage timestamps (§20). All optional; filled as the request flows.
+  google.protobuf.Timestamp gateway_a_recv = 11;      // T1
+  google.protobuf.Timestamp gateway_a_pub = 12;       // T3
+  google.protobuf.Timestamp gateway_b_recv = 13;      // T4
+  google.protobuf.Timestamp gateway_b_invoke = 14;    // T6
+  google.protobuf.Timestamp service_resp = 15;        // T7
+  google.protobuf.Timestamp gateway_b_pub = 16;       // T9
+  google.protobuf.Timestamp gateway_a_recv_resp = 17; // T10
+
+  option (buf.validate.message).cel = {
+    id: "response.ok_has_payload"
+    message: "payload is required when status is STATUS_OK"
+    expression: "this.status != 1 || has(this.payload)"
+  };
+}
+
+// Gateway is the front door: applications see one API regardless of the
+// transport chosen underneath (§17). CallStream reuses Request/Response for the
+// bidi streaming comparison (§10) — the lint rules that would demand unique
+// wrapper types are disabled module-wide in buf.yaml.
+service GatewayService {
+  rpc Call(Request) returns (Response);
+  rpc CallStream(stream Request) returns (stream Response);
+}
