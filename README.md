@@ -377,6 +377,32 @@ no network), so a broken assertion fails the whole flake — the tests are a gat
 not just a convenience. (Flakes only see git-tracked files, so `cli_test.go`
 must be committed for the check to exercise it.)
 
+### Integration test (all clients at once)
+
+```bash
+nix run .#k8s-integration-test                                   # all four buses
+nix run .#k8s-integration-test -- --buses nats,rabbitmq,valkey  # skip MQTT
+nix run .#k8s-integration-test -- --count 50 --timeout 30s
+```
+
+A fast pass/fail smoke test against the **live** cluster. It brings up a
+publisher **and** subscriber for every selected bus **at once**, each in its
+HA/durable mode — NATS JetStream, RabbitMQ quorum queue, ValKey via Sentinel
+(so the writer reaches the primary), MQTT bridged — publishes `--count` uniquely
+numbered messages per bus, and **asserts every one is received**.
+
+Unlike the chaos / soak / benchmark harnesses (which *report, don't assert* and
+always exit 0), this one **exits non-zero the moment any bus loses a message**,
+so it works as a gate. The buses are at-least-once, so the subscriber collects
+for the whole `--timeout` window and the check is on the **distinct** set
+received — duplicate deliveries never mask a loss. Credentials are read from cp0
+over SSH (the `kexec` pattern); it needs no monitoring stack and emits no OTel,
+so it does not touch the metrics ports the soak/bench harnesses use. A PASS/FAIL
+table is written to `integration-logs/integration.md` (per-bus sub/pub captures
+alongside it, git-ignored). It is a `nix run` app, not a `nix flake check`,
+because it needs a running cluster and SSH — neither exists in Nix's hermetic
+build sandbox.
+
 ### Chaos / failover test
 
 ```bash
@@ -577,8 +603,8 @@ helper that also sets `KUBECONFIG` — mirror that pattern, don't hand-roll ssh.
 `mqtt-pub`/`mqtt-sub`, `valkey-pub`/`valkey-sub`.
 
 **Testing**
-`k8s-chaos-failover`, `k8s-soak-test`, `k8s-lifecycle-test-all`,
-`k8s-cluster-test`.
+`k8s-integration-test`, `k8s-chaos-failover`, `k8s-soak-test`,
+`k8s-lifecycle-test-all`, `k8s-cluster-test`.
 
 ---
 
