@@ -274,6 +274,9 @@ rec {
         tag      = "0.1.0";
         grpcPort = 9440;         # ClusterIP only; reached via gateway-B
       };
+      # Host rpc-benchmark rpc_* /metrics (§22). In the 9300 range like the
+      # proto-bench driver, but past its 9300-9307 block so the two never clash.
+      benchMetricsPort = 9310;
     };
   };
 

@@ -111,6 +111,13 @@ func (r *HDR) Summarize(elapsed time.Duration) Summary {
 	return s
 }
 
+// ValueAt returns the raw latency at quantile q (0..100), e.g. ValueAt(95) for
+// the p95 the RPC benchmark reports (§27). It reads the raw, uncorrected
+// histogram; CorrectedP99 covers the coordinated-omission-corrected series.
+func (r *HDR) ValueAt(q float64) time.Duration {
+	return time.Duration(r.raw.ValueAtQuantile(q))
+}
+
 // CorrectedP99 returns the coordinated-omission-corrected p99 and whether any
 // corrected samples exist (false for closed-loop cells that never call
 // RecordCorrected).

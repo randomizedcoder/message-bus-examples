@@ -50,6 +50,7 @@ func main() {
 
 	mux := rpc.NewMux(*validate)
 	registerCustomer(mux)
+	registerEcho(mux)
 
 	cache := rpc.NewIdempotencyCache(*idemTTL)
 	handler := idempotent(cache, mux)
@@ -169,6 +170,20 @@ func idempotent(cache *rpc.IdempotencyCache, mux *rpc.Mux) rpc.Handler {
 		}
 		return resp, nil
 	})
+}
+
+// registerEcho wires the "echo" service used by the payload-size sweep (§26):
+// Echo returns the request's AllTypes unchanged, so the response envelope grows
+// in step with the request. AllTypes.blob (max 1 MiB, protovalidate-bounded) is
+// the size knob, letting rpc-benchmark sweep 100 B … 1 MiB round-trips over any
+// transport without a bespoke per-size message.
+func registerEcho(mux *rpc.Mux) {
+	mux.Handle("echo", "Echo",
+		func() proto.Message { return &benchmarkv1.AllTypes{} },
+		func(ctx context.Context, in proto.Message) (proto.Message, error) {
+			return in, nil
+		},
+	)
 }
 
 // registerCustomer wires the demo "customer" service. Lookup synthesizes a

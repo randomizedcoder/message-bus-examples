@@ -10,6 +10,7 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/harness"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rpcmetrics"
 )
 
 // Run modes. closed is a closed loop — `concurrency` workers, each sends the
@@ -73,28 +74,36 @@ type result struct {
 	Timeouts     int64
 	NonOK        int64
 	Elapsed      time.Duration
+	// hdr is the raw accumulator, retained so run.json can render the p95 and the
+	// full .hgrm distribution the reduced Summary does not carry.
+	hdr *harness.HDR
 }
 
 // classify records one call outcome into hdr, returning whether it was a success
 // (an OK response within the deadline). It also bumps the timeout / non-OK
-// counters the printed report separates out.
-func classify(hdr *harness.HDR, rtt time.Duration, resp *rpcv1.Response, err error, timeouts, nonOK *int64, corrected bool, expected time.Duration) bool {
+// counters the printed report separates out, and mirrors the outcome to sink
+// (the rpc_* Prometheus metrics; nil when -metrics-addr is unset).
+func classify(hdr *harness.HDR, rtt time.Duration, resp *rpcv1.Response, err error, timeouts, nonOK *int64, corrected bool, expected time.Duration, sink *metricsSink) bool {
 	switch {
 	case err != nil:
 		if isTimeout(err) {
 			atomic.AddInt64(timeouts, 1)
 			hdr.AddErrorKind("timeout")
+			sink.record(rpcmetrics.ResultTimeout, nil, rtt)
 		} else {
 			hdr.AddErrorKind("error")
+			sink.record(rpcmetrics.ResultError, nil, rtt)
 		}
 		return false
 	case resp.GetStatus() != rpcv1.Status_STATUS_OK:
 		if resp.GetStatus() == rpcv1.Status_STATUS_TIMEOUT {
 			atomic.AddInt64(timeouts, 1)
 			hdr.AddErrorKind("timeout")
+			sink.record(rpcmetrics.ResultTimeout, resp, rtt)
 		} else {
 			atomic.AddInt64(nonOK, 1)
 			hdr.AddErrorKind("non-ok")
+			sink.record(rpcmetrics.ResultNonOK, resp, rtt)
 		}
 		return false
 	default:
@@ -103,6 +112,7 @@ func classify(hdr *harness.HDR, rtt time.Duration, resp *rpcv1.Response, err err
 		} else {
 			hdr.Record(rtt)
 		}
+		sink.record(rpcmetrics.ResultOK, resp, rtt)
 		return true
 	}
 }
@@ -113,16 +123,16 @@ func isTimeout(err error) bool {
 
 // runBench drives one cell. newReq builds a fresh Request per call (a new
 // request_id each time) so the server sees distinct logical operations.
-func runBench(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig) result {
+func runBench(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, sink *metricsSink) result {
 	hdr := harness.NewHDR()
 	var timeouts, nonOK int64
 	var elapsed time.Duration
 
 	switch cfg.mode {
 	case modeClosed:
-		elapsed = runClosed(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK)
+		elapsed = runClosed(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK, sink)
 	case modeOpen:
-		elapsed = runOpen(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK)
+		elapsed = runOpen(ctx, client, newReq, cfg, hdr, &timeouts, &nonOK, sink)
 	}
 
 	res := result{
@@ -130,6 +140,7 @@ func runBench(ctx context.Context, client benchClient, newReq func() *rpcv1.Requ
 		Timeouts: timeouts,
 		NonOK:    nonOK,
 		Elapsed:  elapsed,
+		hdr:      hdr,
 	}
 	res.CorrectedP99, res.CorrectedOK = hdr.CorrectedP99()
 	return res
@@ -137,7 +148,7 @@ func runBench(ctx context.Context, client benchClient, newReq func() *rpcv1.Requ
 
 // runClosed spawns cfg.concurrency workers draining a shared budget of
 // cfg.requests, each issuing a timed unary Call and blocking for its reply.
-func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK *int64) time.Duration {
+func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK *int64, sink *metricsSink) time.Duration {
 	var remaining atomic.Int64
 	remaining.Store(int64(cfg.requests))
 
@@ -154,7 +165,7 @@ func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Req
 				}
 				rtt, resp, err := oneCall(ctx, client, newReq(), cfg.timeout)
 				mu.Lock()
-				classify(hdr, rtt, resp, err, timeouts, nonOK, false, 0)
+				classify(hdr, rtt, resp, err, timeouts, nonOK, false, 0, sink)
 				mu.Unlock()
 			}
 		}()
@@ -166,7 +177,7 @@ func runClosed(ctx context.Context, client benchClient, newReq func() *rpcv1.Req
 // runOpen offers requests at cfg.rate for cfg.duration, capping outstanding work
 // at a pool sized from the rate so a stalled server cannot spawn unbounded
 // goroutines, and CO-corrects each sample against its intended send instant.
-func runOpen(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK *int64) time.Duration {
+func runOpen(ctx context.Context, client benchClient, newReq func() *rpcv1.Request, cfg benchConfig, hdr *harness.HDR, timeouts, nonOK *int64, sink *metricsSink) time.Duration {
 	pool := int(cfg.rate/10) + 1
 	if pool > 4096 {
 		pool = 4096
@@ -205,7 +216,7 @@ func runOpen(ctx context.Context, client benchClient, newReq func() *rpcv1.Reque
 			expected := time.Since(intended) // how late the send already is
 			rtt, resp, err := oneCall(ctx, client, newReq(), cfg.timeout)
 			mu.Lock()
-			classify(hdr, rtt+expected, resp, err, timeouts, nonOK, true, rtt+expected)
+			classify(hdr, rtt+expected, resp, err, timeouts, nonOK, true, rtt+expected, sink)
 			mu.Unlock()
 			free <- struct{}{}
 		}(intended)

@@ -47,6 +47,10 @@ in
       DURATION="10s"
       TIMEOUT="5s"
       LOCAL_PORT=9431          # host gateway-A listen port
+      SIZES=""                 # §26 payload-size sweep (e.g. default, or 100B,1KiB,1MiB)
+      METRICS=0                # expose rpc_* /metrics (§22)
+      OUT=""                   # write a run.json here (§35)
+      LINGER="10s"             # hold /metrics open after the run for a final scrape
       AS_JSON=0
       DRY_RUN=0
 
@@ -63,7 +67,11 @@ in
         --duration <d>      open: wall-clock budget (default 10s)
         --timeout <d>       per-call timeout (default 5s)
         --local-port <p>    host gateway-A listen port (default 9431)
-        --json              emit the benchmark result as JSON
+        --sizes <list>      §26 payload sweep over echo.Echo: 'default' or e.g. 100B,1KiB,1MiB
+        --metrics           expose rpc_* Prometheus metrics on localhost:${toString rpc.benchMetricsPort} (§22)
+        --metrics-linger <d> hold /metrics open after the run (default 10s, with --metrics)
+        --out <path>        write a reproducible run.json here (§35)
+        --json              emit each cell as JSON (one object per line)
         --dry-run           print the plan and exit
         -h, --help          this help
       EOF
@@ -79,6 +87,10 @@ in
           --duration) DURATION="$2"; shift 2 ;;
           --timeout) TIMEOUT="$2"; shift 2 ;;
           --local-port) LOCAL_PORT="$2"; shift 2 ;;
+          --sizes) SIZES="$2"; shift 2 ;;
+          --metrics) METRICS=1; shift ;;
+          --metrics-linger) LINGER="$2"; shift 2 ;;
+          --out) OUT="$2"; shift 2 ;;
           --json) AS_JSON=1; shift ;;
           --dry-run) DRY_RUN=1; shift ;;
           -h|--help) usage; exit 0 ;;
@@ -142,6 +154,15 @@ in
         ARGS+=(-rate "$RATE" -duration "$DURATION")
       else
         ARGS+=(-requests "$REQUESTS" -concurrency "$CONCURRENCY")
+      fi
+      if [ -n "$SIZES" ]; then
+        ARGS+=(-sizes "$SIZES")
+      fi
+      if [ "$METRICS" = 1 ]; then
+        ARGS+=(-metrics-addr "localhost:${toString rpc.benchMetricsPort}" -metrics-linger "$LINGER")
+      fi
+      if [ -n "$OUT" ]; then
+        ARGS+=(-out "$OUT")
       fi
       if [ "$AS_JSON" = 1 ]; then
         ARGS+=(-json)
