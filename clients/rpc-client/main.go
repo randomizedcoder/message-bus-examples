@@ -36,6 +36,7 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "per-call timeout (envelope + ctx deadline)")
 	idemKey := flag.String("idempotency-key", "", "idempotency key; with -count>1 proves retry dedup (§29)")
 	count := flag.Int("count", 1, "number of identical calls to issue")
+	stream := flag.Bool("stream", false, "issue the calls over one bidi CallStream instead of unary Call")
 	asJSON := flag.Bool("json", false, "emit one JSON object per call instead of the text summary")
 	flag.Parse()
 
@@ -58,12 +59,74 @@ func main() {
 	}
 
 	exit := 0
-	for i := 1; i <= *count; i++ {
-		if err := call(client, *service, *method, payload, *idemKey, *timeout, *asJSON, i); err != nil {
+	if *stream {
+		if err := callStream(client, *service, *method, payload, *idemKey, *timeout, *count, *asJSON); err != nil {
 			exit = 1
+		}
+	} else {
+		for i := 1; i <= *count; i++ {
+			if err := call(client, *service, *method, payload, *idemKey, *timeout, *asJSON, i); err != nil {
+				exit = 1
+			}
 		}
 	}
 	os.Exit(exit)
+}
+
+// callStream issues count identical requests over one bidi CallStream and reads
+// the count responses back, reporting each. A non-OK response or any transport
+// error yields a non-zero exit. This exercises the §10 streaming path end to end
+// (client -> gateway -> service, all over CallStream).
+func callStream(client *grpcx.Client, service, method string, payload *benchmarkv1.CustomerLookupRequest, idemKey string, timeout time.Duration, count int, asJSON bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	st, err := client.OpenStream(ctx)
+	if err != nil {
+		log.Printf("rpc-client: open stream: %v", err)
+		return err
+	}
+
+	start := time.Now()
+	for i := 1; i <= count; i++ {
+		req, err := rpc.NewRequest(service, method, payload, timeout)
+		if err != nil {
+			log.Printf("rpc-client: build request #%d: %v", i, err)
+			return err
+		}
+		req.IdempotencyKey = idemKey
+		if err := st.Send(req); err != nil {
+			log.Printf("rpc-client: stream send #%d: %v", i, err)
+			return err
+		}
+	}
+	if err := st.CloseSend(); err != nil {
+		log.Printf("rpc-client: stream close-send: %v", err)
+		return err
+	}
+
+	failed := false
+	for i := 1; i <= count; i++ {
+		resp, err := st.Recv()
+		if err != nil {
+			log.Printf("rpc-client: stream recv #%d: %v", i, err)
+			return err
+		}
+		report := newReport(i, &rpcv1.Request{RequestId: resp.GetRequestId()}, resp, time.Since(start))
+		if asJSON {
+			b, _ := json.Marshal(report)
+			fmt.Println(string(b))
+		} else {
+			report.print()
+		}
+		if resp.GetStatus() != rpcv1.Status_STATUS_OK {
+			failed = true
+		}
+	}
+	if failed {
+		return fmt.Errorf("one or more streamed responses were non-OK")
+	}
+	return nil
 }
 
 // call issues one Call and reports it. It returns an error when the call could
