@@ -278,6 +278,20 @@ rec {
       # proto-bench driver, but past its 9300-9307 block so the two never clash.
       benchMetricsPort = 9310;
     };
+
+    # gRPC-native message bus: a central broker (grpcbrokerd) that fans each
+    # published Message out to every live subscriber of its topic over gRPC
+    # server-streaming — a fifth bus alongside NATS/RabbitMQ/MQTT/Valkey.
+    # Deployed as a single-pod Deployment + NodePort so the host grpcbuscli
+    # pub/sub clients reach it, exactly like the other buses' NodePorts.
+    grpcbus = {
+      namespace   = "grpcbus";
+      image       = "messagebus.local/grpc-broker";
+      tag         = "0.1.0";
+      grpcPort    = 9450;    # BrokerService h2c inside the cluster
+      nodePort    = 30450;   # broker → host :30450 (free past the rpc 30430 slot)
+      metricsPort = 9451;    # broker OTel /metrics (grpcbus_*); scraped in a later PR
+    };
   };
 
   # ─── proto-bench host driver defaults ──────────────────────────────

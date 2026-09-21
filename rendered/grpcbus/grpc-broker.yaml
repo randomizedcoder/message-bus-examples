@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-broker
+  namespace: grpcbus
+  labels:
+    app.kubernetes.io/name: grpc-broker
+    app: grpc-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grpc-broker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grpc-broker
+        app: grpc-broker
+    spec:
+      containers:
+      - name: grpc-broker
+        image: messagebus.local/grpc-broker:0.1.0
+        imagePullPolicy: Never
+        args:
+        - -grpc-addr=:9450
+        - -metrics-addr=:9451
+        - -validate=true
+        ports:
+        - containerPort: 9450
+          name: grpc
+        - containerPort: 9451
+          name: metrics
+        readinessProbe:
+          tcpSocket:
+            port: 9450
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 9450
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: "1"
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-broker
+  namespace: grpcbus
+  labels:
+    app.kubernetes.io/name: grpc-broker
+spec:
+  type: NodePort
+  selector:
+    app: grpc-broker
+  ports:
+  - name: grpc
+    port: 9450
+    targetPort: 9450
+    nodePort: 30450
+

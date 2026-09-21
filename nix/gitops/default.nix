@@ -37,6 +37,9 @@ let
   # RPC lab gateway + service (§17): gRPC now; bus transports reuse gateway-B.
   rpc = import (envDir + "/rpc.nix") { inherit pkgs lib; };
 
+  # gRPC-native message bus broker (streaming pub/sub fan-out).
+  grpcbus = import (envDir + "/grpcbus.nix") { inherit pkgs lib; };
+
   # Combine all manifests
   allManifests = base.manifests ++ argocd.manifests ++ cilium.manifests
     ++ storage.manifests
@@ -46,7 +49,8 @@ let
     ++ valkey.manifests
     ++ monitoring.manifests
     ++ workloads.manifests
-    ++ rpc.manifests;
+    ++ rpc.manifests
+    ++ grpcbus.manifests;
 
   emitStep = m:
     if m ? source then ''

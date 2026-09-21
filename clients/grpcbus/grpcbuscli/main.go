@@ -2,9 +2,12 @@
 // (grpcbrokerd), mirroring the natscli/rabbitmqcli/mqttcli/valkeycli shape so the
 // gRPC bus is exercised exactly like the other buses.
 //
-//	grpcbuscli pub -addr 127.0.0.1:9450 -subject demo -msg "hello"
+//	grpcbuscli pub -addr 10.33.33.10:30450 -subject demo -msg "hello"
 //	grpcbuscli pub -subject demo -count 100 -rate 10/s
 //	grpcbuscli sub -subject demo -count 5 -timeout 10s -json
+//
+// -addr defaults to 127.0.0.1:30450 (the broker's NodePort), like the other bus
+// CLIs; point it at a cluster node IP (10.33.33.10-13) to reach the deployment.
 //
 // pub calls BrokerService.Publish once per message; sub opens a server-stream
 // Subscribe and prints each message. Delivery is ephemeral fan-out: sub only sees
@@ -28,7 +31,7 @@ import (
 )
 
 func main() {
-	f := cli.Parse("grpcbuscli", "127.0.0.1:9450", "")
+	f := cli.Parse("grpcbuscli", "127.0.0.1:30450", "")
 	id := fmt.Sprintf("grpcbuscli-%d", os.Getpid())
 
 	cc, err := grpc.NewClient(f.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
