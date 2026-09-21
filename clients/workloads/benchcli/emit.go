@@ -37,6 +37,16 @@ type cellResult struct {
 	lateSends int64
 	missing   int64      // fault mode: sequences that got no valid reply (design §8.4; 0 for other modes)
 	sat       *satResult // saturation ramp verdict (nil for other modes; print-only)
+
+	// Driver-side allocation + GC over the measured pass (runtime.MemStats deltas)
+	// and the responder's service time (each reply's envelope server stamps). These
+	// are what the driver alone can measure; the harness still merges the agent GC
+	// columns from Prometheus (design §8.4, §11.2).
+	srvHDR           *harness.HDR // agent service-time samples (nil/empty when replies carry no server stamps)
+	allocsPerMsg     float64
+	allocBytesPerMsg float64
+	gcPauseP99       time.Duration
+	gcCyclesPerS     float64
 }
 
 // cellID is the run.json cell key: transport/codec/fixture/pool/gc/mode
@@ -65,6 +75,18 @@ func summaryFromHDR(c harness.Cell, r cellResult) runrecord.Summary {
 	}
 	if p99, ok := r.hdr.CorrectedP99(); ok {
 		out.RTTCoCorrectedP99US = us(p99)
+	}
+	// Driver-side allocation + GC (omitempty in the record, so a pass that
+	// allocated nothing or triggered no GC simply leaves those columns blank).
+	out.DriverAllocsPerMsg = r.allocsPerMsg
+	out.DriverAllocBytesPerMsg = r.allocBytesPerMsg
+	out.DriverGCPauseP99US = us(r.gcPauseP99)
+	out.DriverGCCyclesPerS = r.gcCyclesPerS
+	// Responder service time, when the transport stamped both server timestamps.
+	if r.srvHDR != nil && r.srvHDR.Count() > 0 {
+		ss := r.srvHDR.Summarize(0)
+		out.ServerDurationP50US = us(ss.P50)
+		out.ServerDurationP99US = us(ss.P99)
 	}
 	return out
 }

@@ -181,3 +181,31 @@ func sameAnomalies(got, want []envelope.Anomaly) bool {
 	}
 	return true
 }
+
+// TestServerDuration: the responder service time is server_send - server_receive
+// when both stamps are present, and 0 (so the caller leaves the column blank)
+// for a nil envelope, a missing stamp, or out-of-order stamps.
+func TestServerDuration(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	ts := func(d time.Duration) *timestamppb.Timestamp { return timestamppb.New(base.Add(d)) }
+	tests := []struct {
+		description string
+		env         *workloadsv1.Envelope
+		expected    time.Duration
+	}{
+		{"nil envelope", nil, 0},
+		{"both stamps, 250µs service", &workloadsv1.Envelope{ServerReceiveTime: ts(0), ServerSendTime: ts(250 * time.Microsecond)}, 250 * time.Microsecond},
+		{"zero service (same instant)", &workloadsv1.Envelope{ServerReceiveTime: ts(time.Second), ServerSendTime: ts(time.Second)}, 0},
+		{"missing send stamp", &workloadsv1.Envelope{ServerReceiveTime: ts(0)}, 0},
+		{"missing receive stamp", &workloadsv1.Envelope{ServerSendTime: ts(0)}, 0},
+		{"neither stamp", &workloadsv1.Envelope{}, 0},
+		{"reversed stamps clamp to 0", &workloadsv1.Envelope{ServerReceiveTime: ts(time.Millisecond), ServerSendTime: ts(0)}, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			if got := envelope.ServerDuration(tc.env); got != tc.expected {
+				t.Errorf("ServerDuration = %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
