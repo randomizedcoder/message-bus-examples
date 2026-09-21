@@ -29,7 +29,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream)")
 	mode := flag.String("mode", "closed", "load mode: closed (concurrency+requests) | open (rate+duration)")
 	requests := flag.Int("requests", 10000, "closed mode: total request budget")
 	concurrency := flag.Int("concurrency", 32, "closed mode: number of concurrent workers")
@@ -62,8 +62,10 @@ func main() {
 		client, err = grpcx.Dial(*addr)
 	case "nats":
 		client, err = natsx.Dial(*addr)
+	case "natsjs":
+		client, err = natsx.DialJetStream(*addr)
 	default:
-		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats)", *transport)
+		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, *transport, err)

@@ -56,6 +56,44 @@ func TestSubject(t *testing.T) {
 	}
 }
 
+func TestJSSubject(t *testing.T) {
+	tests := []struct {
+		description string
+		service     string
+		method      string
+		expected    string
+	}{
+		{
+			description: "durable subject lives under the rpcjs prefix, apart from the Core rpc.* subjects",
+			service:     "customer",
+			method:      "Lookup",
+			expected:    "rpcjs.customer.Lookup",
+		},
+		{
+			description: "boundary: empty service/method still well-formed and stream-matchable",
+			service:     "",
+			method:      "",
+			expected:    "rpcjs..",
+		},
+		{
+			description: "corner: dotted service nests but stays under the stream wildcard rpcjs.>",
+			service:     "billing.v2",
+			method:      "Charge",
+			expected:    "rpcjs.billing.v2.Charge",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			if got := JSSubject(tt.service, tt.method); got != tt.expected {
+				t.Fatalf("JSSubject(%q, %q) = %q, want %q", tt.service, tt.method, got, tt.expected)
+			}
+			if JSSubjectWildcard != "rpcjs.>" {
+				t.Fatalf("JSSubjectWildcard = %q, want rpcjs.>", JSSubjectWildcard)
+			}
+		})
+	}
+}
+
 func TestNatsURL(t *testing.T) {
 	tests := []struct {
 		description string

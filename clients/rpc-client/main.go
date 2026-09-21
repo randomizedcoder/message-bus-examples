@@ -30,7 +30,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream)")
 	service := flag.String("service", "customer", "service to route to")
 	method := flag.String("method", "Lookup", "method to invoke")
 	customerID := flag.String("customer-id", "11111111-1111-1111-1111-111111111111", "customer id (uuid) for the Lookup payload")
@@ -65,8 +65,13 @@ func main() {
 			log.Fatalf("rpc-client: -stream requires -transport grpc (NATS Core req/reply has no streaming)")
 		}
 		client, err = natsx.Dial(*addr)
+	case "natsjs":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (JetStream RPC has no streaming)")
+		}
+		client, err = natsx.DialJetStream(*addr)
 	default:
-		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats)", *transport)
+		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-client: dial %s over %s: %v", *addr, *transport, err)

@@ -34,6 +34,7 @@ import (
 func main() {
 	addr := flag.String("grpc-addr", ":9440", "GatewayService gRPC listen address")
 	natsAddr := flag.String("nats", "", "also serve GatewayService over NATS Core req/reply at this broker (host:port or nats://…); empty disables")
+	natsJSAddr := flag.String("nats-jetstream", "", "also serve GatewayService over durable NATS JetStream at this broker (host:port or nats://…); empty disables")
 	idemTTL := flag.Duration("idempotency-ttl", 5*time.Minute, "how long a completed operation is remembered for retry dedup (0 disables)")
 	validate := flag.Bool("validate", true, "run protovalidate on decoded request payloads")
 	flag.Parse()
@@ -53,6 +54,17 @@ func main() {
 		}
 		defer resp.Close()
 		log.Printf("rpc-service: also serving GatewayService over NATS at %s (subject %s)", *natsAddr, natsx.SubjectWildcard)
+	}
+
+	// Optional durable JetStream responder: same handler, at-least-once delivery
+	// with redelivery deduped by the idempotency cache (§29, §30).
+	if *natsJSAddr != "" {
+		resp, err := natsx.ServeJetStream(context.Background(), *natsJSAddr, handler)
+		if err != nil {
+			log.Fatalf("rpc-service: serve NATS JetStream at %s: %v", *natsJSAddr, err)
+		}
+		defer resp.Close()
+		log.Printf("rpc-service: also serving GatewayService over durable JetStream at %s (subject %s)", *natsJSAddr, natsx.JSSubjectWildcard)
 	}
 
 	lis, err := net.Listen("tcp", *addr)
@@ -84,6 +96,12 @@ func idempotent(cache *rpc.IdempotencyCache, mux *rpc.Mux) rpc.Handler {
 		key := req.GetIdempotencyKey()
 		if cached, ok := cache.Get(key); ok {
 			replay := proto.Clone(cached).(*rpcv1.Response)
+			// Stamp this attempt's request_id onto the replay: the cached response
+			// carries the original attempt's id, but a retry (§29) has a new
+			// request_id, and out-of-band transports (JetStream, RabbitMQ, …)
+			// correlate the reply by request_id — so the replay must answer for
+			// the id that is actually waiting.
+			replay.RequestId = req.GetRequestId()
 			if replay.Metadata == nil {
 				replay.Metadata = map[string]string{}
 			}
