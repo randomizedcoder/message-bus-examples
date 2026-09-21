@@ -16,7 +16,7 @@ rec {
 
   # Bump after editing clients/go.mod:
   #   nix build .#message-bus-clients 2>&1 | grep 'got:'
-  goVendorHash = "sha256-fJ4CMJ7ftq57zBopjmfvoKVSp3W9iMxi9n3FmaZDjkI=";
+  goVendorHash = "sha256-kooBlyaQ23b4ZhObTQRHfHoyCqf0J92+BbcV2oaiFWQ=";
 
   # Bump when clients/buf.lock (or buf) changes:
   #   nix build .#buf-deps 2>&1 | grep 'got:'

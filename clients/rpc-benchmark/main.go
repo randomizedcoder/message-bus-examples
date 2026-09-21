@@ -27,6 +27,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rpcmetrics"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/tracing"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/runrecord"
 )
@@ -55,7 +56,14 @@ func main() {
 	retryBackoff := flag.Duration("retry-backoff", 0, "fixed delay before each retry when -retries > 0")
 	idemKey := flag.String("idempotency-key", "", "§29: stamp every request with this idempotency_key, so after the first OK the service replays the cached response — a deterministic duplicate-operation demonstration. Empty = each call is a distinct logical operation")
 	asJSON := flag.Bool("json", false, "emit each cell as a JSON object (one per line) instead of the text report")
+	traceMode := flag.String("trace", "off", "distributed tracing (§23): off | stdout (stdout writes each span as JSON to stderr; enable it on gateway + service too to capture the whole path)")
 	flag.Parse()
+
+	shutdownTracing, terr := tracing.NewProvider("rpc-benchmark", *traceMode)
+	if terr != nil {
+		log.Fatalf("rpc-benchmark: tracing: %v", terr)
+	}
+	defer func() { _ = shutdownTracing(context.Background()) }()
 
 	cfg := benchConfig{
 		mode:        *mode,
@@ -107,6 +115,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, label, err)
 	}
+	// §23 tracing: wrap the transport so each call is a client span that injects
+	// trace context into the envelope. This sits INSIDE the retry wrapper below so
+	// every attempt is its own span under its own request_id.
+	client = rpc.NewTracingClient(client)
 	// §29 safe retry: wrap the transport so a transient failure is re-sent under a
 	// fresh request_id but the same idempotency_key. The wrapper is a drop-in
 	// rpc.Client, so the load engine is unchanged.
@@ -161,6 +173,8 @@ func main() {
 		total += c.res.Summary.Count
 	}
 	if total == 0 {
+		// os.Exit skips the deferred tracer flush; export any pending spans first.
+		_ = shutdownTracing(context.Background())
 		os.Exit(1)
 	}
 }
