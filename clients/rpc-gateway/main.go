@@ -31,12 +31,13 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
 
 func main() {
 	addr := flag.String("grpc-addr", ":9430", "GatewayService gRPC ingress listen address")
-	backend := flag.String("backend", "localhost:9440", "default backend: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
-	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs (durable JetStream)")
+	backend := flag.String("backend", "localhost:9440", "default backend: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a full amqp:// URL (rabbitmq*)")
+	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs | rabbitmq | rabbitmq-direct")
 	var routes routeFlags
 	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable; grpc egress only)")
 	flag.Parse()
@@ -85,9 +86,9 @@ type router struct {
 
 func newRouter(transport, defaultTarget string, routes routeFlags) (*router, error) {
 	switch transport {
-	case "grpc", "nats", "natsjs":
+	case "grpc", "nats", "natsjs", "rabbitmq", "rabbitmq-direct":
 	default:
-		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs)", transport)
+		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct)", transport)
 	}
 	r := &router{
 		transport:     transport,
@@ -125,6 +126,11 @@ func (r *router) client(target string) (rpc.Client, error) {
 		c, err = natsx.Dial(target)
 	case "natsjs":
 		c, err = natsx.DialJetStream(target)
+	case "rabbitmq":
+		// target is a full amqp:// URL (it carries the credentials).
+		c, err = rabbitmqx.Dial(target, rabbitmqx.ModeReplyQueue)
+	case "rabbitmq-direct":
+		c, err = rabbitmqx.Dial(target, rabbitmqx.ModeDirect)
 	default:
 		c, err = grpcx.Dial(target)
 	}

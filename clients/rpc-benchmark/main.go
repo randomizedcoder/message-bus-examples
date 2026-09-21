@@ -25,11 +25,14 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
 
 func main() {
-	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream)")
+	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a RabbitMQ host:port / amqp URL (rabbitmq*)")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream) | rabbitmq (reply queue) | rabbitmq-direct (Direct Reply-To)")
+	amqpUser := flag.String("user", "admin", "RabbitMQ username (rabbitmq* transports)")
+	amqpPass := flag.String("pass", os.Getenv("RABBITMQ_PASS"), "RabbitMQ password (rabbitmq* transports; default $RABBITMQ_PASS)")
 	mode := flag.String("mode", "closed", "load mode: closed (concurrency+requests) | open (rate+duration)")
 	requests := flag.Int("requests", 10000, "closed mode: total request budget")
 	concurrency := flag.Int("concurrency", 32, "closed mode: number of concurrent workers")
@@ -64,8 +67,12 @@ func main() {
 		client, err = natsx.Dial(*addr)
 	case "natsjs":
 		client, err = natsx.DialJetStream(*addr)
+	case "rabbitmq":
+		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeReplyQueue)
+	case "rabbitmq-direct":
+		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeDirect)
 	default:
-		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs)", *transport)
+		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, *transport, err)

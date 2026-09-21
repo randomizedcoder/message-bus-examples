@@ -26,11 +26,14 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
 
 func main() {
-	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc) or a NATS broker host:port (nats)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream)")
+	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a RabbitMQ host:port / amqp URL (rabbitmq*)")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs | rabbitmq | rabbitmq-direct")
+	amqpUser := flag.String("user", "admin", "RabbitMQ username (rabbitmq* transports)")
+	amqpPass := flag.String("pass", os.Getenv("RABBITMQ_PASS"), "RabbitMQ password (rabbitmq* transports; default $RABBITMQ_PASS)")
 	service := flag.String("service", "customer", "service to route to")
 	method := flag.String("method", "Lookup", "method to invoke")
 	customerID := flag.String("customer-id", "11111111-1111-1111-1111-111111111111", "customer id (uuid) for the Lookup payload")
@@ -70,8 +73,18 @@ func main() {
 			log.Fatalf("rpc-client: -stream requires -transport grpc (JetStream RPC has no streaming)")
 		}
 		client, err = natsx.DialJetStream(*addr)
+	case "rabbitmq":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (RabbitMQ RPC has no streaming)")
+		}
+		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeReplyQueue)
+	case "rabbitmq-direct":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (RabbitMQ RPC has no streaming)")
+		}
+		client, err = rabbitmqx.Dial(rabbitmqx.URL(*addr, *amqpUser, *amqpPass), rabbitmqx.ModeDirect)
 	default:
-		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs)", *transport)
+		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-client: dial %s over %s: %v", *addr, *transport, err)
