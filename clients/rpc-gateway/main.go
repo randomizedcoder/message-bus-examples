@@ -33,18 +33,20 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
 func main() {
 	addr := flag.String("grpc-addr", ":9430", "GatewayService gRPC ingress listen address")
 	backend := flag.String("backend", "localhost:9440", "default backend: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a full amqp:// URL (rabbitmq*)")
-	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt")
+	egress := flag.String("transport", "grpc", "egress transport to the backend: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt | valkey | valkey-stream")
 	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt egress")
+	valkeyPass := flag.String("valkey-pass", os.Getenv("VALKEY_PASSWORD"), "Valkey primary password for valkey* egress (default $VALKEY_PASSWORD); -backend is then the comma-separated Sentinel list")
 	var routes routeFlags
 	flag.Var(&routes, "route", "per-service backend override service=host:port (repeatable; grpc egress only)")
 	flag.Parse()
 
-	router, err := newRouter(*egress, *backend, byte(*mqttQoS), routes)
+	router, err := newRouter(*egress, *backend, byte(*mqttQoS), *valkeyPass, routes)
 	if err != nil {
 		log.Fatalf("rpc-gateway: %v", err)
 	}
@@ -81,17 +83,18 @@ type router struct {
 	transport     string
 	defaultTarget string
 	mqttQoS       byte
+	valkeyPass    string
 	byService     map[string]string // service -> target override
 
 	mu      sync.Mutex
 	clients map[string]rpc.Client // target -> client
 }
 
-func newRouter(transport, defaultTarget string, mqttQoS byte, routes routeFlags) (*router, error) {
+func newRouter(transport, defaultTarget string, mqttQoS byte, valkeyPass string, routes routeFlags) (*router, error) {
 	switch transport {
-	case "grpc", "nats", "natsjs", "rabbitmq", "rabbitmq-direct", "mqtt":
+	case "grpc", "nats", "natsjs", "rabbitmq", "rabbitmq-direct", "mqtt", "valkey", "valkey-stream":
 	default:
-		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt)", transport)
+		return nil, fmt.Errorf("unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt|valkey|valkey-stream)", transport)
 	}
 	if transport == "mqtt" && mqttQoS > 2 {
 		return nil, fmt.Errorf("-mqtt-qos must be 0, 1, or 2, got %d", mqttQoS)
@@ -100,6 +103,7 @@ func newRouter(transport, defaultTarget string, mqttQoS byte, routes routeFlags)
 		transport:     transport,
 		defaultTarget: defaultTarget,
 		mqttQoS:       mqttQoS,
+		valkeyPass:    valkeyPass,
 		byService:     make(map[string]string, len(routes)),
 		clients:       make(map[string]rpc.Client),
 	}
@@ -140,6 +144,10 @@ func (r *router) client(target string) (rpc.Client, error) {
 		c, err = rabbitmqx.Dial(target, rabbitmqx.ModeDirect)
 	case "mqtt":
 		c, err = mqttx.Dial(target, r.mqttQoS)
+	case "valkey":
+		c, err = valkeyx.Dial(target, r.valkeyPass)
+	case "valkey-stream":
+		c, err = valkeyx.DialStream(target, r.valkeyPass)
 	default:
 		c, err = grpcx.Dial(target)
 	}

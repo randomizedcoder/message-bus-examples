@@ -31,6 +31,7 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
 func main() {
@@ -40,6 +41,9 @@ func main() {
 	amqpURL := flag.String("amqp", "", "also serve GatewayService over RabbitMQ req/reply at this broker (full amqp://user:pass@host:port/ URL); empty disables")
 	mqttAddr := flag.String("mqtt", "", "also serve GatewayService over MQTT req/reply at this broker (host:port or tcp://…); empty disables")
 	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS for the -mqtt responder (0, 1, or 2)")
+	valkeyAddr := flag.String("valkey", "", "also serve GatewayService over Valkey Pub/Sub req/reply at these Sentinels (comma-separated host:port list); empty disables")
+	valkeyStreamAddr := flag.String("valkey-stream", "", "also serve GatewayService over durable Valkey Streams req/reply at these Sentinels (comma-separated host:port list); empty disables")
+	valkeyPass := flag.String("valkey-pass", os.Getenv("VALKEY_PASSWORD"), "Valkey primary password for the -valkey/-valkey-stream responders (default $VALKEY_PASSWORD)")
 	idemTTL := flag.Duration("idempotency-ttl", 5*time.Minute, "how long a completed operation is remembered for retry dedup (0 disables)")
 	validate := flag.Bool("validate", true, "run protovalidate on decoded request payloads")
 	flag.Parse()
@@ -95,6 +99,27 @@ func main() {
 		}
 		defer resp.Close()
 		log.Printf("rpc-service: also serving GatewayService over MQTT at %s (qos=%d, request topic %s)", *mqttAddr, *mqttQoS, "rpc/request/+/+")
+	}
+
+	// Optional Valkey Pub/Sub responder: same handler over the ephemeral path.
+	if *valkeyAddr != "" {
+		resp, err := valkeyx.Serve(context.Background(), *valkeyAddr, *valkeyPass, handler)
+		if err != nil {
+			log.Fatalf("rpc-service: serve Valkey Pub/Sub at %s: %v", *valkeyAddr, err)
+		}
+		defer resp.Close()
+		log.Printf("rpc-service: also serving GatewayService over Valkey Pub/Sub at %s", *valkeyAddr)
+	}
+
+	// Optional durable Valkey Streams responder: at-least-once delivery with
+	// redelivery deduped by the idempotency cache (§29).
+	if *valkeyStreamAddr != "" {
+		resp, err := valkeyx.ServeStream(context.Background(), *valkeyStreamAddr, *valkeyPass, handler)
+		if err != nil {
+			log.Fatalf("rpc-service: serve Valkey Streams at %s: %v", *valkeyStreamAddr, err)
+		}
+		defer resp.Close()
+		log.Printf("rpc-service: also serving GatewayService over durable Valkey Streams at %s", *valkeyStreamAddr)
 	}
 
 	lis, err := net.Listen("tcp", *addr)

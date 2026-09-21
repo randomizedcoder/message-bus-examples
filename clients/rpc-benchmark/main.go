@@ -27,14 +27,16 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
 func main() {
 	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a RabbitMQ host:port / amqp URL (rabbitmq*)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream) | rabbitmq (reply queue) | rabbitmq-direct (Direct Reply-To) | mqtt")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs (durable JetStream) | rabbitmq (reply queue) | rabbitmq-direct (Direct Reply-To) | mqtt | valkey (Pub/Sub) | valkey-stream (durable Streams)")
 	amqpUser := flag.String("user", "admin", "RabbitMQ username (rabbitmq* transports)")
 	amqpPass := flag.String("pass", os.Getenv("RABBITMQ_PASS"), "RabbitMQ password (rabbitmq* transports; default $RABBITMQ_PASS)")
 	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt; reported as mqtt-qos<N> so QoS runs stay distinctly labeled (§13)")
+	valkeyPass := flag.String("valkey-pass", os.Getenv("VALKEY_PASSWORD"), "Valkey primary password (valkey* transports; default $VALKEY_PASSWORD). For valkey*, -addr is the comma-separated Sentinel list")
 	mode := flag.String("mode", "closed", "load mode: closed (concurrency+requests) | open (rate+duration)")
 	requests := flag.Int("requests", 10000, "closed mode: total request budget")
 	concurrency := flag.Int("concurrency", 32, "closed mode: number of concurrent workers")
@@ -82,8 +84,12 @@ func main() {
 		}
 		label = fmt.Sprintf("mqtt-qos%d", *mqttQoS)
 		client, err = mqttx.Dial(*addr, byte(*mqttQoS))
+	case "valkey":
+		client, err = valkeyx.Dial(*addr, *valkeyPass)
+	case "valkey-stream":
+		client, err = valkeyx.DialStream(*addr, *valkeyPass)
 	default:
-		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt)", *transport)
+		log.Fatalf("rpc-benchmark: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt|valkey|valkey-stream)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-benchmark: dial %s over %s: %v", *addr, label, err)
