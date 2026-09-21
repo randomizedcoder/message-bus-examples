@@ -119,6 +119,7 @@ type Summary struct {
 	// Latency (driver monotonic RTT), microseconds.
 	RTTP50US            float64 `json:"rtt_p50_us"`
 	RTTP90US            float64 `json:"rtt_p90_us"`
+	RTTP95US            float64 `json:"rtt_p95_us,omitempty"`
 	RTTP99US            float64 `json:"rtt_p99_us"`
 	RTTP999US           float64 `json:"rtt_p999_us"`
 	RTTMaxUS            float64 `json:"rtt_max_us"`

@@ -137,7 +137,7 @@ func TestRunBenchClosed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
 			cfg := benchConfig{mode: modeClosed, requests: 200, concurrency: 8, timeout: time.Second}
-			res := runBench(context.Background(), tt.client, newReqFn(), cfg)
+			res := runBench(context.Background(), tt.client, newReqFn(), cfg, nil)
 			if res.Summary.Count != tt.wantOK {
 				t.Errorf("ok count = %d, want %d", res.Summary.Count, tt.wantOK)
 			}
@@ -161,7 +161,7 @@ func TestRunBenchClosed(t *testing.T) {
 func TestRunBenchOpen(t *testing.T) {
 	cfg := benchConfig{mode: modeOpen, rate: 500, duration: 200 * time.Millisecond, timeout: time.Second}
 	client := fakeClient{delay: time.Millisecond, status: rpcv1.Status_STATUS_OK}
-	res := runBench(context.Background(), client, newReqFn(), cfg)
+	res := runBench(context.Background(), client, newReqFn(), cfg, nil)
 
 	if res.Summary.Count == 0 {
 		t.Fatalf("open-loop produced no samples")
@@ -185,7 +185,7 @@ func TestRunBenchOpenCancel(t *testing.T) {
 	client := fakeClient{status: rpcv1.Status_STATUS_OK}
 
 	done := make(chan result, 1)
-	go func() { done <- runBench(ctx, client, newReqFn(), cfg) }()
+	go func() { done <- runBench(ctx, client, newReqFn(), cfg, nil) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
