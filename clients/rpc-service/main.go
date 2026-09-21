@@ -28,6 +28,7 @@ import (
 	rpcv1 "github.com/randomizedcoder/message-bus-examples/clients/gen/go/rpc/v1"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
@@ -37,6 +38,8 @@ func main() {
 	natsAddr := flag.String("nats", "", "also serve GatewayService over NATS Core req/reply at this broker (host:port or nats://…); empty disables")
 	natsJSAddr := flag.String("nats-jetstream", "", "also serve GatewayService over durable NATS JetStream at this broker (host:port or nats://…); empty disables")
 	amqpURL := flag.String("amqp", "", "also serve GatewayService over RabbitMQ req/reply at this broker (full amqp://user:pass@host:port/ URL); empty disables")
+	mqttAddr := flag.String("mqtt", "", "also serve GatewayService over MQTT req/reply at this broker (host:port or tcp://…); empty disables")
+	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS for the -mqtt responder (0, 1, or 2)")
 	idemTTL := flag.Duration("idempotency-ttl", 5*time.Minute, "how long a completed operation is remembered for retry dedup (0 disables)")
 	validate := flag.Bool("validate", true, "run protovalidate on decoded request payloads")
 	flag.Parse()
@@ -78,6 +81,20 @@ func main() {
 		}
 		defer resp.Close()
 		log.Printf("rpc-service: also serving GatewayService over RabbitMQ (queue %s)", rabbitmqx.RequestQueue)
+	}
+
+	// Optional MQTT responder: same handler over MQTT req/reply (§13), at the
+	// chosen QoS. QoS>=1 may redeliver, deduped by the idempotency cache (§29).
+	if *mqttAddr != "" {
+		if *mqttQoS < 0 || *mqttQoS > 2 {
+			log.Fatalf("rpc-service: -mqtt-qos must be 0, 1, or 2, got %d", *mqttQoS)
+		}
+		resp, err := mqttx.Serve(context.Background(), *mqttAddr, byte(*mqttQoS), handler)
+		if err != nil {
+			log.Fatalf("rpc-service: serve MQTT at %s: %v", *mqttAddr, err)
+		}
+		defer resp.Close()
+		log.Printf("rpc-service: also serving GatewayService over MQTT at %s (qos=%d, request topic %s)", *mqttAddr, *mqttQoS, "rpc/request/+/+")
 	}
 
 	lis, err := net.Listen("tcp", *addr)
