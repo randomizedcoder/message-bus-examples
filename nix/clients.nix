@@ -48,6 +48,8 @@ let
       "rpc-client"
       "rpc-gateway"
       "rpc-service"
+      # RPC load driver (§25): rpc.Call workload with HDR latency + CO correction.
+      "rpc-benchmark"
     ];
     meta = {
       description = "Message-bus pub/sub CLI clients (NATS, RabbitMQ, MQTT, ValKey)";
@@ -175,6 +177,11 @@ let
       type = "app";
       program = "${clients}/bin/rpc-client";
       meta.description = "RPC lab client: builds a routed rpc.v1 envelope and calls a GatewayService endpoint";
+    };
+    rpc-benchmark = {
+      type = "app";
+      program = "${clients}/bin/rpc-benchmark";
+      meta.description = "RPC lab load driver: closed/open-loop rpc.Call latency (HDR + CO correction), gRPC this phase";
     };
   };
 
