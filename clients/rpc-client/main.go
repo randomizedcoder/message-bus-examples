@@ -28,14 +28,16 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/mqttx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/valkeyx"
 )
 
 func main() {
 	addr := flag.String("addr", "localhost:9430", "endpoint: a GatewayService host:port (grpc), a NATS broker host:port (nats/natsjs), or a RabbitMQ host:port / amqp URL (rabbitmq*)")
-	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt")
+	transport := flag.String("transport", "grpc", "transport: grpc | nats | natsjs | rabbitmq | rabbitmq-direct | mqtt | valkey | valkey-stream")
 	amqpUser := flag.String("user", "admin", "RabbitMQ username (rabbitmq* transports)")
 	amqpPass := flag.String("pass", os.Getenv("RABBITMQ_PASS"), "RabbitMQ password (rabbitmq* transports; default $RABBITMQ_PASS)")
 	mqttQoS := flag.Int("mqtt-qos", 1, "MQTT QoS (0, 1, or 2) for -transport mqtt; QoS 0/1/2 are distinct semantics")
+	valkeyPass := flag.String("valkey-pass", os.Getenv("VALKEY_PASSWORD"), "Valkey primary password (valkey* transports; default $VALKEY_PASSWORD). For valkey*, -addr is the comma-separated Sentinel list")
 	service := flag.String("service", "customer", "service to route to")
 	method := flag.String("method", "Lookup", "method to invoke")
 	customerID := flag.String("customer-id", "11111111-1111-1111-1111-111111111111", "customer id (uuid) for the Lookup payload")
@@ -93,8 +95,18 @@ func main() {
 			log.Fatalf("rpc-client: -mqtt-qos must be 0, 1, or 2, got %d", *mqttQoS)
 		}
 		client, err = mqttx.Dial(*addr, byte(*mqttQoS))
+	case "valkey":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (Valkey Pub/Sub req/reply has no streaming)")
+		}
+		client, err = valkeyx.Dial(*addr, *valkeyPass)
+	case "valkey-stream":
+		if *stream {
+			log.Fatalf("rpc-client: -stream requires -transport grpc (Valkey Streams req/reply has no gRPC streaming)")
+		}
+		client, err = valkeyx.DialStream(*addr, *valkeyPass)
 	default:
-		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt)", *transport)
+		log.Fatalf("rpc-client: unknown -transport %q (grpc|nats|natsjs|rabbitmq|rabbitmq-direct|mqtt|valkey|valkey-stream)", *transport)
 	}
 	if err != nil {
 		log.Fatalf("rpc-client: dial %s over %s: %v", *addr, *transport, err)
