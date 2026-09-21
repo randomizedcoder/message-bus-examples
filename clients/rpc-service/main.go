@@ -29,12 +29,14 @@ import (
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/grpcx"
 	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/natsx"
+	"github.com/randomizedcoder/message-bus-examples/clients/internal/rpc/rabbitmqx"
 )
 
 func main() {
 	addr := flag.String("grpc-addr", ":9440", "GatewayService gRPC listen address")
 	natsAddr := flag.String("nats", "", "also serve GatewayService over NATS Core req/reply at this broker (host:port or nats://…); empty disables")
 	natsJSAddr := flag.String("nats-jetstream", "", "also serve GatewayService over durable NATS JetStream at this broker (host:port or nats://…); empty disables")
+	amqpURL := flag.String("amqp", "", "also serve GatewayService over RabbitMQ req/reply at this broker (full amqp://user:pass@host:port/ URL); empty disables")
 	idemTTL := flag.Duration("idempotency-ttl", 5*time.Minute, "how long a completed operation is remembered for retry dedup (0 disables)")
 	validate := flag.Bool("validate", true, "run protovalidate on decoded request payloads")
 	flag.Parse()
@@ -65,6 +67,17 @@ func main() {
 		}
 		defer resp.Close()
 		log.Printf("rpc-service: also serving GatewayService over durable JetStream at %s (subject %s)", *natsJSAddr, natsx.JSSubjectWildcard)
+	}
+
+	// Optional RabbitMQ responder: same handler over AMQP req/reply (§12),
+	// consuming the shared request queue and replying on each request's reply-to.
+	if *amqpURL != "" {
+		resp, err := rabbitmqx.Serve(context.Background(), *amqpURL, handler)
+		if err != nil {
+			log.Fatalf("rpc-service: serve RabbitMQ at %s: %v", *amqpURL, err)
+		}
+		defer resp.Close()
+		log.Printf("rpc-service: also serving GatewayService over RabbitMQ (queue %s)", rabbitmqx.RequestQueue)
 	}
 
 	lis, err := net.Listen("tcp", *addr)
