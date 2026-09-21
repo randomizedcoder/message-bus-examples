@@ -71,6 +71,47 @@ windowed/openloop cap), `--warmup` (`5s`, settle after each GC rollout),
 core list for the driver), `--integrity` (`none|sha256`), `--log-dir`
 (`./proto-bench-logs`).
 
+## Codec profiles per transport
+
+The bus transports decode by the envelope's content-type header, so a single
+running agent serves every codec — `nats`/`rabbitmq`/`valkey`/`mqtt` × any of
+`proto,protojson,vtproto` all work against one deployment.
+
+**gRPC is different: an agent forces one codec for its whole lifetime.** The
+`region-agent -codec` flag drives `grpctransport.NewServer`'s
+`ForceServerCodecV2`, so a run keeps both ends on one profile. Two consequences:
+
+- `proto` and `vtproto` are **wire-identical** (both register under gRPC
+  content-subtype `proto`), so both codecs measure fine against a proto-profile
+  agent — this is the default deployment.
+- `protojson` uses content-subtype `json`, so **gRPC + protojson errors 100 %
+  against a proto-profile agent**. This is by design, not a bug; the harness
+  will report the whole cell as failed.
+
+To measure the gRPC + protojson cell you must first put the agent on the
+protojson profile (a reversible reprofile), then restore it:
+
+```bash
+# 1. stop ArgoCD from reverting the change
+kubectl -n argocd patch application workloads --type merge \
+  -p "'{\"spec\":{\"syncPolicy\":{\"automated\":null}}}'"
+# 2. switch the target agent's codec (args index 3 is -codec=…)
+kubectl -n workloads patch deploy region-agent-us-west-2 --type json \
+  -p "'[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/args/3\",\"value\":\"-codec=protojson\"}]'"
+kubectl -n workloads rollout status deploy region-agent-us-west-2
+# 3. run only that cell
+nix run .#k8s-proto-bench -- --transports grpc --codecs protojson --regions us-west-2 …
+# 4. restore -codec=proto and re-enable automated{prune,selfHeal}
+```
+
+Pass these JSON payloads through the `k8s-vm-ssh` wrapper wrapped in **literal
+single quotes** (`"'…'"`, escaping the inner double quotes as above): the remote
+login shell re-parses the joined command and would otherwise strip the quotes
+and brace-expand the `{…}`. Verify a payload survived with
+`… printf '%s\n' "'…'"` before applying it. Simple `-o jsonpath=…` reads and a
+`bash -s <<'EOF'` heredoc do not need this — the heredoc is the easy way to send
+any multi-line remote script.
+
 ## Run modes
 
 Every request/reply transport supports every mode except where noted; the
@@ -209,3 +250,50 @@ nix flake check                 # gates incl. the gen-drift diff
 On a clean tree `regen-protos` is a no-op. After changing any monitoring GitOps
 source (the dashboard included) run `nix run .#k8s-render-manifests` and commit
 `nix/` + `rendered/` together, as with the buses.
+
+## Reference run & findings
+
+A full matrix run on the live cluster (latency + windowed sweep across all five
+transports × three codecs, plus focused open-loop, the durable tier-B flows, and
+logs fan-out) established these baselines. Treat them as the shape to expect, not
+a contract — the harness reports, it does not assert.
+
+- **gRPC** (`proto`/`vtproto`): closed-loop latency floor p50 ≈ 300 µs; sustains
+  the 2000/s open-loop offer with p99 ≈ 5 ms and 0 errors.
+- **NATS request/reply saturates below 2000/s** open-loop: a single responder is
+  the ceiling, so p50 blows out to seconds and throughput sags under a 2000/s
+  offer. This is the request/reply topology, not a NATS limit — size the offered
+  rate to the responder count.
+- **Durable tier-B** (`jetstream`/`quorum`/`stream`) and **logs fan-out**: 0
+  errors and lossless across all three codecs.
+- **Pooling proof** (offline `benchcli codec` + `BenchmarkCodecMarshal`):
+  `vtproto` with `pool=all` is **0 allocs/op, 0 B/op** at every fixture, and
+  encodes ≈ 3.4× faster than `proto`. The `proto` reflect marshaller allocates
+  even pooled on nested payloads (e.g. ~16 allocs on a complex `medium`), so the
+  "≤ 2 allocs" acceptance bar holds for flat payloads.
+
+### GC / allocation columns
+
+`run.json` / `results.md` carry both **driver-side** and **agent-side** GC and
+allocation figures:
+
+- **Driver-side** (`driver_allocs_per_msg`, `driver_alloc_bytes_per_msg`,
+  `driver_gc_pause_p99_us`, `driver_gc_cycles_per_s`) come from `runtime`
+  MemStats deltas around each cell and populate immediately.
+- **`server_duration_p50/p99_us`** is computed driver-side from the envelope's
+  `server_receive`/`server_send` stamps (no clock-offset needed) — present
+  whenever the transport carries the stamps.
+- **Agent-side** (`agent_gc_cpu_fraction`, `agent_gc_cycles_per_s`) are scraped
+  from the agent's Prometheus series. They require `go_cpu_classes_*`, which the
+  agent only exports once the `region-agent` **image is rebuilt and
+  redeployed** with the `GoRuntimeMetricsRule{Matcher: ^/cpu/classes/}` collector
+  rule; until then these two columns stay blank while the driver columns are
+  full.
+
+### Operational caveats
+
+- **Transient JetStream R3 file-store stall.** Back-to-back logs-fan-out runs can
+  occasionally hit a file-store stall (one run showed ~40 % loss over ~80 s; a
+  clean re-run was lossless in ~2 s). It is not codec-specific — the `proto` and
+  `vtproto` chunks are wire-identical. Re-run to confirm before treating a lossy
+  fan-out cell as real.
