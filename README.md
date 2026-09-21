@@ -537,6 +537,26 @@ agent), a gRPC+protojson cell is only measured when the agent runs that profile 
 the bus transports carry any codec via the envelope's content type. The design
 doc tracks the phase-by-phase specification and acceptance criteria.
 
+### RPC lab (unified request/reply across every transport)
+
+A fourth track puts one API — `rpc.Call(ctx, request) → response` over an
+`rpc.v1` `Any`-payload envelope — in front of gRPC **and** all four buses, so the
+same request/reply is benchmarked apples-to-apples across transports through a
+routing gateway (`client → gateway-A → broker → gateway-B → rpc-service`):
+
+```bash
+nix run .#rpc-client -- -transport nats            # one call over any transport
+nix run .#k8s-rpc-bench                             # load run through the two-gateway path
+nix run .#k8s-rpc-bench -- --sizes default --metrics --out run.json
+nix run .#k8s-rpc-chaos -- --scenario backend      # §28 failure injection mid-run
+```
+
+It carries §29 safe-retry + idempotency (effectively-once), §22 `rpc_*` metrics
+(Grafana dashboard uid `rpc`), and §23 OpenTelemetry trace propagation through the
+envelope (`-trace stdout`). See [docs/rpc/README.md](docs/rpc/README.md) for the
+conceptual guide — what RPC over a bus is, how each transport implements it, what
+durability changes, and why retries are not exactly-once.
+
 ---
 
 ## Cluster access & SSH auth (read this before SSHing to a node)
@@ -654,5 +674,6 @@ nix/images/                     # Nix-built OCI images (nats, rabbitmq, mosquitt
 nix/gitops/env/                 # base, argocd, cilium, storage, nats, rabbitmq, mqtt, valkey
 clients/                        # Go module: cmd/{natscli,rabbitmqcli,mqttcli,valkeycli}
 rendered/                       # committed rendered manifests (ArgoCD source)
-docs/                           # secrets.md, resilience-testing.md, benchmarks.md, protobuf-grpc-benchmark-design.md
+docs/                           # secrets.md, resilience-testing.md, benchmarks.md, proto-bench.md, protobuf-grpc-benchmark-design.md
+docs/rpc/                       # RPC lab conceptual guide (README.md)
 ```
