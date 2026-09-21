@@ -125,6 +125,12 @@ let
     # The one image built from our own Go module (design §9.1). Defined in
     # its own file since it also needs mkGoBinary + versions.
     region-agent = import ./region-agent.nix { inherit pkgs lib versions; };
+
+    # ─── RPC lab gateway + service (§17) ───────────────────────────────
+    # Two more Go-binary images from the shared clients module, deployed
+    # in-cluster so later bus transports get a gateway-B next to the brokers.
+    rpc-gateway = import ./rpc-gateway.nix { inherit pkgs lib versions; };
+    rpc-service = import ./rpc-service.nix { inherit pkgs lib versions; };
   };
 
   # Flat list the preload module + microvm generator consume.
@@ -140,6 +146,8 @@ let
     { name = mon.redisExporter.image; tag = mon.redisExporter.tag; archive = images.prometheus-redis-exporter; }
     { name = mon.mosquittoExporter.image; tag = mon.mosquittoExporter.tag; archive = images.mosquitto-sysexporter; }
     { name = mb.workloads.image; tag = mb.workloads.tag; archive = images.region-agent; }
+    { name = mb.rpc.gateway.image; tag = mb.rpc.gateway.tag; archive = images.rpc-gateway; }
+    { name = mb.rpc.service.image; tag = mb.rpc.service.tag; archive = images.rpc-service; }
   ];
 in
 {
