@@ -113,6 +113,8 @@ spec:
           mountPath: /etc/grafana/dashboards/protobench
         - name: dash-rpc
           mountPath: /etc/grafana/dashboards/rpc
+        - name: dash-grpcbus
+          mountPath: /etc/grafana/dashboards/grpcbus
         - name: data
           mountPath: /var/lib/grafana
         - name: logs
@@ -158,6 +160,9 @@ spec:
       - name: dash-rpc
         configMap:
           name: grafana-dashboard-rpc
+      - name: dash-grpcbus
+        configMap:
+          name: grafana-dashboard-grpcbus
       - name: data
         emptyDir: {}
       - name: logs

@@ -81,4 +81,9 @@ data:
         scrape_interval: 5s
         static_configs:
           - targets: ['10.33.33.1:9310']
+      # gRPC-native message bus broker (grpcbus_* fan-out/drop/subscriber
+      # counters) scraped over its ClusterIP Service on the metrics port.
+      - job_name: grpcbus
+        static_configs:
+          - targets: ['grpc-broker.grpcbus.svc.cluster.local:9451']
 

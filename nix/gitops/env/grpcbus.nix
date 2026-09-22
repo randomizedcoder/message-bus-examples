@@ -9,7 +9,8 @@
 # The image is a Nix-built Go binary preloaded into containerd
 # (imagePullPolicy: Never). Probes are tcpSocket on the gRPC port — the binary
 # serves gRPC only, with no HTTP health endpoint. The broker also serves an OTel
-# /metrics endpoint (grpcbus_*) on metricsPort for a later scrape PR.
+# /metrics endpoint (grpcbus_*) on metricsPort, exposed on the Service so the
+# `grpcbus` Prometheus job scrapes it (see monitoring/{targets,prometheus-config}).
 #
 # An ArgoCD Application (registered in nix/gitops/default.nix) syncs
 # rendered/grpcbus. The namespace itself is declared in base.nix.
@@ -20,6 +21,7 @@ let
   ns = bus.namespace;
   g = toString bus.grpcPort;
   m = toString bus.metricsPort;
+  mnp = toString bus.metricsNodePort;
 
   broker = {
     name = "grpcbus/grpc-broker.yaml";
@@ -90,6 +92,13 @@ let
           port: ${g}
           targetPort: ${g}
           nodePort: ${toString bus.nodePort}
+        # Prometheus scrapes this in-cluster over the ClusterIP DNS name
+        # (grpc-broker.${ns}.svc:${m}); the NodePort is only so the /metrics
+        # endpoint can be curled from the host during verification.
+        - name: metrics
+          port: ${m}
+          targetPort: ${m}
+          nodePort: ${mnp}
     '';
   };
 

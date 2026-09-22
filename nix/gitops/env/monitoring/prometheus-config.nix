@@ -90,5 +90,10 @@
             scrape_interval: 5s
             static_configs:
               - targets: ${targets.rpcBench}
+          # gRPC-native message bus broker (grpcbus_* fan-out/drop/subscriber
+          # counters) scraped over its ClusterIP Service on the metrics port.
+          - job_name: grpcbus
+            static_configs:
+              - targets: ${targets.grpcbus}
   '';
 }

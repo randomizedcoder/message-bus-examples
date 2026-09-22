@@ -16,6 +16,7 @@ let
   mqttC = constants.messageBus.mqtt;
   wlC   = constants.messageBus.workloads;
   rpcC  = constants.messageBus.rpc;
+  grpcbusC = constants.messageBus.grpcbus;
   pb    = constants.protoBench;
 
   # Inline YAML array of quoted targets: ['a:1', 'b:2'].
@@ -81,4 +82,9 @@ in
   # bridge, past the proto-bench driver's 9300-9307 block. DOWN until a benchmark
   # runs with -metrics-addr, exactly like the driver/soak host ranges.
   rpcBench = mkTargets [ "${mon.hostBridgeIP}:${toString rpcC.benchMetricsPort}" ];
+
+  # gRPC-native message bus broker grpcbus_* /metrics. The broker is a single
+  # in-cluster Deployment replica, scraped over its ClusterIP Service DNS name on
+  # the metrics port (no headless/per-pod split needed — there is one pod).
+  grpcbus = mkTargets [ "grpc-broker.${grpcbusC.namespace}.${domain}:${toString grpcbusC.metricsPort}" ];
 }
