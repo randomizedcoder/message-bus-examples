@@ -64,4 +64,11 @@ spec:
     port: 9450
     targetPort: 9450
     nodePort: 30450
+  # Prometheus scrapes this in-cluster over the ClusterIP DNS name
+  # (grpc-broker.grpcbus.svc:9451); the NodePort is only so the /metrics
+  # endpoint can be curled from the host during verification.
+  - name: metrics
+    port: 9451
+    targetPort: 9451
+    nodePort: 30451
 

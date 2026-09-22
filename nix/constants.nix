@@ -290,7 +290,8 @@ rec {
       tag         = "0.1.0";
       grpcPort    = 9450;    # BrokerService h2c inside the cluster
       nodePort    = 30450;   # broker → host :30450 (free past the rpc 30430 slot)
-      metricsPort = 9451;    # broker OTel /metrics (grpcbus_*); scraped in a later PR
+      metricsPort = 9451;    # broker OTel /metrics (grpcbus_*), scraped by the `grpcbus` job
+      metricsNodePort = 30451; # /metrics → host :30451 for curl verification (scrape uses ClusterIP)
     };
   };
 
