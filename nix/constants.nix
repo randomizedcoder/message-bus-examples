@@ -377,6 +377,14 @@ rec {
     defaultPostRoundWait  = 60;
     defaultWarmupSec      = 15;
     defaultLogDir         = "./chaos-logs";
+    # Per bus, run this many producer+consumer pairs, each pinned to a node
+    # from defaultClientNodes (round-robin). Spreading clients across nodes —
+    # including the killable ones — means each round some clients sit directly
+    # on the victim node (their NodePort ingress dies) while the rest ride
+    # through via in-cluster failover. cp0 is still never killed (it hosts the
+    # kubectl/credentials path), so a client pinned there is the survivor baseline.
+    defaultClients        = 3;
+    defaultClientNodes    = "cp0,cp1,cp2,w3";
   };
 
   # ─── Soak test defaults ────────────────────────────────────────────
